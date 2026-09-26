@@ -1,0 +1,47 @@
+# eclipse
+bin
+*.launch
+.settings
+.metadata
+.classpath
+.project
+
+# idea
+out
+*.ipr
+*.iws
+*.iml
+.idea/
+*.iws
+*.iml
+
+# gradle
+build
+.gradle
+
+# other
+eclipse
+run
+run-data
+.cache
+
+# Codex-Search
+.tmp*
+
+# Files from Forge MDK
+forge*changelog.txt
+
+# --- 新增和调整的内容 ---
+
+# 如果你不需要上传公开模组的 jar 包，请取消下面这行的注释
+# libs/
+
+# MacOS 系统文件
+.DS_Store
+
+# VSCode 配置
+.vscode/
+
+# 日志文件
+logs/
+*.log
