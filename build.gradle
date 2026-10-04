@@ -46,6 +46,10 @@ repositories {
     maven { url = uri("https://thedarkcolour.github.io/KotlinForForge/") }
     maven { url = uri("https://dl.cloudsmith.io/public/geckolib3/geckolib/maven/") }
     maven { url = uri("https://cursemaven.com") }
+    maven {
+        name = 'Lss233 Mirror'
+        url = 'https://lss233.littleservice.cn/repositories/minecraft'
+    }
     mavenCentral()
 
     // 启用本地 libs 目录作为仓库（必须保留）

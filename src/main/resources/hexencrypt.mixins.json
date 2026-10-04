@@ -6,10 +6,12 @@
   "refmap": "hexencrypt.mixins.refmap.json",
   "mixins": [
     "AbstractSpellMixin",
-    "ItemStackMixin"
+    "ItemStackMixin",
+    "ArcaneAnvilMenuMixin",
+    "ItemCombinerMenuAccessor",
+    "SpellSelectionManagerMixin",
+    "ItemCombinerMenuMixin"
   ],
-  "client": [
-    "SpellSelectionManagerMixin"
-  ],
+  "client": [],
   "server": []
 }

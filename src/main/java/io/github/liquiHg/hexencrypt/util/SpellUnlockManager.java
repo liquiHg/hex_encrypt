@@ -85,9 +85,7 @@ public class SpellUnlockManager {
         AbstractSpell spell = getSpellFromScroll(stack);
         if (spell == null) return true; // 不是有效卷轴，视为已解锁，不处理
 
-        Boolean result = DistExecutor.unsafeCallWhenOn(Dist.CLIENT,
-                () -> () -> ClientSpellCache.isUnlocked(spell.getSpellName()));
-        return result != null && result;
+        return isSpellUnlockedClientSide(spell);
     }
 
     /** 判断玩家是否已解锁指定法术（服务端权威，客户端走缓存）。 */
@@ -95,11 +93,20 @@ public class SpellUnlockManager {
         if (player == null || spell == null) return false;
 
         if (player.level().isClientSide()) {
-            Boolean result = DistExecutor.unsafeCallWhenOn(Dist.CLIENT,
-                    () -> () -> ClientSpellCache.isUnlocked(spell.getSpellName()));
-            return result != null && result;
+            return isSpellUnlockedClientSide(spell);
         }
         return getUnlockedSpells(player).contains(spell.getSpellName());
+    }
+
+    /**
+     * 仅通过客户端缓存判断法术是否解锁。
+     * 不需要 Player 引用，服务端调用时返回 false（不会误伤服务端逻辑）。
+     */
+    public static boolean isSpellUnlockedClientSide(AbstractSpell spell) {
+        if (spell == null) return false;
+        Boolean result = DistExecutor.unsafeCallWhenOn(Dist.CLIENT,
+                () -> () -> ClientSpellCache.isUnlocked(spell.getSpellName()));
+        return result != null && result;
     }
 
     // ==================== 修改解锁状态（仅服务端） ====================
