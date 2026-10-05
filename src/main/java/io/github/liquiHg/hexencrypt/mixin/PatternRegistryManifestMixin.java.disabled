@@ -1,0 +1,34 @@
+package io.github.liquiHg.hexencrypt.mixin;
+
+import at.petrak.hexcasting.api.utils.HexUtils;
+import at.petrak.hexcasting.common.casting.PatternRegistryManifest;
+import net.minecraft.core.Registry;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.tags.TagKey;
+import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Redirect;
+
+@Mixin(value = PatternRegistryManifest.class, remap = false)
+public class PatternRegistryManifestMixin {
+
+    /**
+     * 拦截 processRegistry 里对 HexUtils.isOfTag 的调用。
+     * 如果 key 的命名空间是 hexencrypt，强制返回 true，让它走 Per-World 分支。
+     * remap = false 是因为 HexUtils 是 Kotlin 类，不在 SRG 映射表里。
+     */
+    @Redirect(
+            method = "processRegistry",
+            at = @At(
+                    value = "INVOKE",
+                    target = "Lat/petrak/hexcasting/api/utils/HexUtils;isOfTag(Lnet/minecraft/core/Registry;Lnet/minecraft/resources/ResourceKey;Lnet/minecraft/tags/TagKey;)Z"
+            ),
+            remap = false
+    )
+    private static <T> boolean hexencrypt$redirectIsOfTag(Registry<T> registry, ResourceKey<T> key, TagKey<T> tag) {
+        if (key.location().getNamespace().equals("hexencrypt")) {
+            return true;
+        }
+        return HexUtils.isOfTag(registry, key, tag);
+    }
+}

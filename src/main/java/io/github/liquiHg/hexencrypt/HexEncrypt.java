@@ -1,7 +1,6 @@
 package io.github.liquiHg.hexencrypt;
 
 import com.mojang.logging.LogUtils;
-import io.github.liquiHg.hexencrypt.actions.ModActions;
 import io.github.liquiHg.hexencrypt.network.ModNetwork;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.server.ServerStartingEvent;
@@ -25,16 +24,12 @@ public class HexEncrypt {
         MinecraftForge.EVENT_BUS.register(this);
         ModLoadingContext.get().registerConfig(ModConfig.Type.COMMON, Config.SPEC);
         ModItems.ITEMS.register(modEventBus);
-        // 添加这一行：注册 Hex 法术
-        ModActions.ACTIONS.register(modEventBus);
+        // 移除 ModActions.ACTIONS.register(modEventBus);
     }
 
     private void commonSetup(final FMLCommonSetupEvent event) {
         event.enqueueWork(ModNetwork::register);
         LOGGER.info("Hex Encryption common setup");
-        if (Config.debugMode) {
-            LOGGER.info("Debug mode is ON");
-        }
     }
 
     @SubscribeEvent

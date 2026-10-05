@@ -10,7 +10,8 @@
     "ArcaneAnvilMenuMixin",
     "ItemCombinerMenuAccessor",
     "SpellSelectionManagerMixin",
-    "ItemCombinerMenuMixin"
+    "ItemCombinerMenuMixin",
+    "HexUtilsMixin"
   ],
   "client": [],
   "server": []
