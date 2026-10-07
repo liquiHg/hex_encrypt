@@ -4,11 +4,11 @@ import at.petrak.hexcasting.api.casting.ActionRegistryEntry;
 import at.petrak.hexcasting.api.casting.castables.Action;
 import at.petrak.hexcasting.api.casting.math.HexDir;
 import at.petrak.hexcasting.api.casting.math.HexPattern;
-import at.petrak.hexcasting.common.lib.HexRegistries;
 import at.petrak.hexcasting.xplat.IXplatAbstractions;
 import io.github.liquiHg.hexencrypt.HexEncrypt;
 import io.github.liquiHg.hexencrypt.actions.OpCastContinuousIronsSpell;
 import io.github.liquiHg.hexencrypt.actions.OpCastIronsSpell;
+import io.github.liquiHg.hexencrypt.actions.OpCastIronsSpellWithTarget;
 import io.redspace.ironsspellbooks.api.registry.SpellRegistry;
 import io.redspace.ironsspellbooks.api.spells.AbstractSpell;
 import io.redspace.ironsspellbooks.api.spells.CastType;
@@ -16,31 +16,105 @@ import net.minecraft.core.Registry;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
+import net.minecraftforge.fml.event.lifecycle.FMLCommonSetupEvent;
 import net.minecraftforge.registries.RegisterEvent;
+import org.objectweb.asm.ClassReader;
+import org.objectweb.asm.ClassVisitor;
+import org.objectweb.asm.MethodVisitor;
+import org.objectweb.asm.Opcodes;
 
+import java.io.InputStream;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Random;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 @Mod.EventBusSubscriber(modid = HexEncrypt.MODID, bus = Mod.EventBusSubscriber.Bus.MOD)
 public class ISSHexIntegration {
 
     public static final List<String> REGISTERED_ISS_SPELL_IDS = new ArrayList<>();
+    private static final Set<String> USED_SIGNATURES = new HashSet<>();
+
+    private static final List<AbstractSpell> PENDING_SPELLS = new ArrayList<>();
+
+    private static final int MAX_SUFFIX_LEN = 6;
+
+    // ==================== 官能团段位定义 ====================
+
+    private static final String SCHOOL_ELDRITCH  = "aedwwedewaqawqqaqq";
+    private static final String SCHOOL_NATURE    = "wqaqwawqaqw";
+    private static final String SCHOOL_LIGHTNING = "qeaqadeedew";
+    private static final String SCHOOL_ICE       = "eadaedeadaedeadae";
+    private static final String SCHOOL_BLOOD     = "edewqaqqqeeeeqeweweweweweddw";
+    private static final String SCHOOL_EVOCATION = "eeeaaeeedewwewqaaedwaeadwe";
+    private static final String SCHOOL_HOLY      = "adeaaedaqadeaaeda";
+    private static final String SCHOOL_ENDER     = "qdeddwaqwqqqwq";
+    private static final String SCHOOL_FIRE      = "aaqawawa";
+    private static final String SCHOOL_FALLBACK  = "wdw";
+
+    private static final String TARGET_SELF   = "qaq";
+    private static final String TARGET_OTHER  = "ede";
+    private static final String TARGET_SUMMON = "aqqa";
+
+    private static final String CAST_NONE       = "eqaa";
+    private static final String CAST_INSTANT    = "www";
+    private static final String CAST_CONTINUOUS = "qqqqq";
+    private static final String CAST_LONG       = "qqqqqaw";
+
+    private static final Set<String> SELF_TARGET_SPELLS = Set.of(
+            "heal", "greater_heal", "haste", "fortify",
+            "blessing_of_life", "shield", "evasion",
+            "invisibility", "oakskin", "cleanse", "angel_wing",
+            "frost_step", "blood_step", "teleport", "recall",
+            "abyssal_shroud", "planar_sight", "gluttony",
+            "heartstop", "acupuncture", "ascension", "charge",
+            "counterspell", "pocket_dimension", "cloud_of_regeneration",
+            "healing_circle", "wisp", "divine_smite"
+    );
 
     /**
-     * 已生成过的签名，用于在运行时二次去重（理论上用不上，但加一层保险）。
+     * 手动强制名单：出现这里就强制走 WithTarget。
+     * 一般不需要维护，自动检测覆盖大部分情况。只在自动检测漏了时补。
      */
-    private static final Set<String> USED_SIGNATURES = new HashSet<>();
+    private static final Set<String> FORCE_WITH_TARGET = Set.of(
+            // 暂无
+    );
+
+    /**
+     * 手动排除名单：即使自动检测命中，也强制不走 WithTarget。
+     * 用于个别自动化判定失误的情况。
+     */
+    private static final Set<String> NEVER_WITH_TARGET = Set.of(
+            // 暂无
+    );
+
+    // ==================== ASM 扫描 ====================
+
+    /** 目标数据基类，简称"简单目标"。 */
+    private static final String TARGET_ENTITY_CAST_DATA =
+            "io/redspace/ironsspellbooks/capabilities/magic/TargetEntityCastData";
+
+    /**
+     * 复杂目标类型：法术引用了这些类型时，说明它的 onCast 期望的是经过转换的数据，
+     * 而不是裸的 TargetEntityCastData。这种法术不能走 WithTarget。
+     */
+    private static final Set<String> COMPLEX_CAST_DATA_TYPES = Set.of(
+            "io/redspace/ironsspellbooks/spells/TargetedTargetAreaCastData",
+            "io/redspace/ironsspellbooks/capabilities/magic/TelekinesisData",
+            "io/redspace/ironsspellbooks/capabilities/magic/ChainCastData",
+            "io/redspace/ironsspellbooks/capabilities/magic/QuickCastData"
+    );
+
+    // ==================== 阶段 1：捕获并缓存法术 ====================
 
     @SubscribeEvent
     public static void onRegisterSpells(RegisterEvent event) {
-        if (!event.getRegistryKey().equals(SpellRegistry.SPELL_REGISTRY_KEY)) {
-            return;
-        }
+        if (!event.getRegistryKey().equals(SpellRegistry.SPELL_REGISTRY_KEY)) return;
 
-        HexEncrypt.LOGGER.info("[Hex加密] 捕获到 ISS 法术注册事件，开始提取法术...");
+        HexEncrypt.LOGGER.info("[Hex加密] 捕获到 ISS 法术注册事件，开始缓存法术列表...");
 
         var spellRegistry = SpellRegistry.REGISTRY.get();
         if (spellRegistry == null) {
@@ -48,129 +122,304 @@ public class ISSHexIntegration {
             return;
         }
 
-        List<AbstractSpell> spells = new ArrayList<>();
+        PENDING_SPELLS.clear();
         for (ResourceLocation id : spellRegistry.getKeys()) {
             AbstractSpell spell = SpellRegistry.getSpell(id);
             if (spell != null && spell != SpellRegistry.none() && spell.isEnabled()) {
-                spells.add(spell);
+                PENDING_SPELLS.add(spell);
             }
         }
-        HexEncrypt.LOGGER.info("[Hex加密] 从 ISS 注册表提取到 {} 个有效法术。", spells.size());
+        HexEncrypt.LOGGER.info("[Hex加密] 缓存了 {} 个待解析的 ISS 法术。", PENDING_SPELLS.size());
+    }
+
+    // ==================== 阶段 2：CommonSetup 中解析并注册 ====================
+
+    @SubscribeEvent
+    public static void onCommonSetup(FMLCommonSetupEvent event) {
+        event.enqueueWork(ISSHexIntegration::registerAllHexActions);
+    }
+
+    private static void registerAllHexActions() {
+        if (PENDING_SPELLS.isEmpty()) {
+            HexEncrypt.LOGGER.warn("[Hex加密] 无待处理法术，跳过 Hex 动作注册。");
+            return;
+        }
+
+        HexEncrypt.LOGGER.info("[Hex加密] 开始为 {} 个 ISS 法术注册 Hex 动作...", PENDING_SPELLS.size());
+
+        USED_SIGNATURES.clear();
+        REGISTERED_ISS_SPELL_IDS.clear();
 
         Registry<ActionRegistryEntry> actionRegistry = IXplatAbstractions.INSTANCE.getActionRegistry();
 
-        for (AbstractSpell spell : spells) {
+        int success = 0;
+        int withTargetCount = 0;
+        int continuousCount = 0;
+        int normalCount = 0;
+
+        Map<String, String> actionKindLog = new HashMap<>();
+
+        for (AbstractSpell spell : PENDING_SPELLS) {
             ResourceLocation spellId = spell.getSpellResource();
             String spellName = spell.getSpellName();
             ResourceLocation hexId = new ResourceLocation(HexEncrypt.MODID, "iss_" + spellName);
 
-            HexPattern pattern = generateDeterministicPattern(spellName, hexId.toString());
+            HexPattern pattern = generateStructuredPattern(spell, hexId.toString());
 
-            Action action;
-            if (spell.getCastType() == CastType.CONTINUOUS) {
-                action = new OpCastContinuousIronsSpell(spellId);
+            boolean withTarget;
+            if (FORCE_WITH_TARGET.contains(spellName)) {
+                withTarget = true;
+            } else if (NEVER_WITH_TARGET.contains(spellName)) {
+                withTarget = false;
             } else {
-                action = new OpCastIronsSpell(spellId);
+                withTarget = detectSpellIsSimpleTarget(spell);
             }
 
-            Registry.register(actionRegistry, hexId, new ActionRegistryEntry(pattern, action));
-            REGISTERED_ISS_SPELL_IDS.add(hexId.toString());
+            Action action;
+            String kind;
+            if (withTarget) {
+                action = new OpCastIronsSpellWithTarget(spellId);
+                kind = "WithTarget";
+                withTargetCount++;
+            } else if (spell.getCastType() == CastType.CONTINUOUS) {
+                action = new OpCastContinuousIronsSpell(spellId);
+                kind = "Continuous";
+                continuousCount++;
+            } else {
+                action = new OpCastIronsSpell(spellId);
+                kind = "Normal";
+                normalCount++;
+            }
+            actionKindLog.put(spellName, kind);
+
+            try {
+                Registry.register(actionRegistry, hexId, new ActionRegistryEntry(pattern, action));
+                REGISTERED_ISS_SPELL_IDS.add(hexId.toString());
+                success++;
+            } catch (IllegalStateException e) {
+                HexEncrypt.LOGGER.error(
+                        "[Hex加密] 无法注册 {}：Hex 动作注册表已冻结（时机过晚）。", hexId, e);
+            } catch (Throwable t) {
+                HexEncrypt.LOGGER.error("[Hex加密] 注册 {} 时发生未知错误。", hexId, t);
+            }
         }
 
-        HexEncrypt.LOGGER.info("[Hex加密] 成功注册了 {} 个 ISS 法术图案。", REGISTERED_ISS_SPELL_IDS.size());
-        printPerWorldPatternJson();
+        HexEncrypt.LOGGER.info("[Hex加密] 成功注册了 {}/{} 个 ISS 法术，唯一签名数 = {}。",
+                success, PENDING_SPELLS.size(), USED_SIGNATURES.size());
+        HexEncrypt.LOGGER.info("[Hex加密] 分派统计：WithTarget={} Continuous={} Normal={}",
+                withTargetCount, continuousCount, normalCount);
+
+        List<String> withTargetNames = new ArrayList<>();
+        for (Map.Entry<String, String> e : actionKindLog.entrySet()) {
+            if ("WithTarget".equals(e.getValue())) withTargetNames.add(e.getKey());
+        }
+        withTargetNames.sort(String::compareTo);
+        HexEncrypt.LOGGER.info("[Hex加密] 走 WithTarget 操作符的法术: {}", withTargetNames);
+
+        printReminder();
     }
 
+    // ==================== 主流程 ====================
+
+    private static HexPattern generateStructuredPattern(AbstractSpell spell, String hexId) {
+        String school = getSchoolSegment(spell);
+        String target = getTargetSegment(classifyTarget(spell));
+        String cast   = getCastSegment(spell.getCastType());
+        String base   = school + target + cast;
+
+        for (int suffixLen = 0; suffixLen <= MAX_SUFFIX_LEN; suffixLen++) {
+            String suffix = suffixLen == 0 ? "" : hashSuffix(spell.getSpellName(), suffixLen);
+            HexPattern pattern;
+            try {
+                pattern = HexPattern.fromAnglesUnchecked(base + suffix, HexDir.EAST);
+            } catch (IllegalStateException | IllegalArgumentException e) {
+                continue;
+            }
+            if (USED_SIGNATURES.add(pattern.anglesSignature())) {
+                HexEncrypt.LOGGER.debug("[Hex加密] {} 使用签名，长度={}", hexId, base.length() + suffixLen);
+                return pattern;
+            }
+        }
+
+        for (int attempt = 0; attempt < 64; attempt++) {
+            String suffix = hashSuffix(spell.getSpellName() + "#" + attempt, MAX_SUFFIX_LEN);
+            HexPattern pattern;
+            try {
+                pattern = HexPattern.fromAnglesUnchecked(base + suffix, HexDir.EAST);
+            } catch (IllegalStateException | IllegalArgumentException e) {
+                continue;
+            }
+            if (USED_SIGNATURES.add(pattern.anglesSignature())) {
+                HexEncrypt.LOGGER.debug("[Hex加密] {} 使用扰动签名，attempt={}", hexId, attempt);
+                return pattern;
+            }
+        }
+
+        HexEncrypt.LOGGER.warn("[Hex加密] {} 无法生成唯一签名，使用兜底", hexId);
+        try {
+            return HexPattern.fromAnglesUnchecked(base + hashSuffix(spell.getSpellName(), MAX_SUFFIX_LEN), HexDir.EAST);
+        } catch (Exception e) {
+            return HexPattern.fromAnglesUnchecked("waadwawdaaweewq", HexDir.EAST);
+        }
+    }
+
+    private static String hashSuffix(String spellName, int len) {
+        long h = mixSeed(spellName);
+        char[] turns = {'w', 'e', 'q', 'd', 'a'};
+        StringBuilder sb = new StringBuilder(len);
+        for (int i = 0; i < len; i++) {
+            sb.append(turns[(int) Math.floorMod(h, 5)]);
+            h = h / 5 ^ 0x9E3779B97F4A7C15L;
+        }
+        return sb.toString();
+    }
+
+    // ==================== 学派识别（读配置文件） ====================
+
+    private static String getSchoolSegment(AbstractSpell spell) {
+        String path = ISSHexConfig.getSchoolPath(spell);
+        if (path == null) {
+            HexEncrypt.LOGGER.debug(
+                    "[Hex加密] 未在配置中找到法术 {} 的学派，使用 FALLBACK。",
+                    spell.getSpellName());
+            return SCHOOL_FALLBACK;
+        }
+        return schoolPathToSegment(path);
+    }
+
+    private static String schoolPathToSegment(String path) {
+        return switch (path.toLowerCase(Locale.ROOT)) {
+            case "eldritch"      -> SCHOOL_ELDRITCH;
+            case "nature"        -> SCHOOL_NATURE;
+            case "lightning"     -> SCHOOL_LIGHTNING;
+            case "ice", "frost"  -> SCHOOL_ICE;
+            case "blood"         -> SCHOOL_BLOOD;
+            case "evocation"     -> SCHOOL_EVOCATION;
+            case "holy"          -> SCHOOL_HOLY;
+            case "ender"         -> SCHOOL_ENDER;
+            case "fire"          -> SCHOOL_FIRE;
+            default              -> SCHOOL_FALLBACK;
+        };
+    }
+
+    // ==================== 自动检测：法术是否能用 WithTarget ====================
+
     /**
-     * 为每个 ISS 法术生成一个确定性的、互不相同的原型图案。
+     * 用 ASM 扫描法术类的全部方法，收集它引用的所有 CastData 类型。
      *
-     * <h3>生成策略</h3>
-     * <ul>
-     *   <li>用 {@code spellName} 的哈希（经过 xorshift 搅拌）作为随机种子，
-     *       保证同一法术每次都得到同一个图案，且不同法术种子互不相同。</li>
-     *   <li>随机生成一条长度 10~16 的转向签名。长度足够长是"有多个欧拉路径"的
-     *       前提——短签名（2~5）往往是直线段，在六边形网格里只有唯一一条欧拉轨迹，
-     *       ScrungledPatternsSave 调用 EulerPathFinder 时会抛异常。</li>
-     *   <li>字符池只用 {@code w/e/q/d/a} 五个转向，刻意排除 {@code 's'}（掉头），
-     *       掉头会 100% 立刻产生自交。</li>
-     *   <li>用 {@code HexPattern.fromAngles} 校验。这个工厂方法会检测自交，
-     *       自交时抛 {@code IllegalStateException}，捕获后换下一个随机签名重试。</li>
-     *   <li>最多重试 1000 次。以 10~16 长度、5 字符池估算，一次成功率约 30%~60%，
-     *       连续 1000 次失败的概率是 10^-300 量级，实际不可能发生。</li>
-     * </ul>
+     * 判定规则：
+     *   引用了 TARGET_ENTITY_CAST_DATA，且没有引用任何 COMPLEX_CAST_DATA_TYPES
+     *   → 简单目标法术，可以用 OpCastIronsSpellWithTarget。
      *
-     * <h3>为什么必须"多个欧拉路径"</h3>
-     * Hex 的 Per-World 图案系统（{@code ScrungledPatternsSave}）会对每个 per-world
-     * 图案调用 {@code EulerPathFinder} 生成"打乱版"笔顺。如果图案在网格图上只有
-     * 唯一一条欧拉轨迹（典型是直线段），打乱过程会找不到替代路径而抛异常，
-     * 导致玩家进入世界后卷轴 tick 时 NPE 崩服。
+     * 这个规则比"只看 checkPreCastConditions"更准：
+     *   - sacrifice/blight：只引用 TargetEntityCastData → 命中
+     *   - haste/slow：引用 TargetEntityCastData + TargetedTargetAreaCastData → 排除
+     *   - telekinesis：引用 TargetEntityCastData + TelekinesisData → 排除
      */
-    private static HexPattern generateDeterministicPattern(String spellName, String uniqueKey) {
-        // ---------- 1. 用 spellName 生成一个高质量的种子 ----------
-        // 不要直接用 String.hashCode()：它在短字符串上的碰撞率不可忽略，
-        // 而且它对字符顺序的敏感度不均匀。这里用一个 xorshift 混合器。
+    private static boolean detectSpellIsSimpleTarget(AbstractSpell spell) {
+        Class<?> cls = spell.getClass();
+        String resourceName = cls.getSimpleName() + ".class";
+
+        try (InputStream is = cls.getResourceAsStream(resourceName)) {
+            if (is == null) {
+                HexEncrypt.LOGGER.debug(
+                        "[Hex加密][检测] 无法读取 {}.class，跳过检测", cls.getName());
+                return false;
+            }
+
+            ClassReader cr = new ClassReader(is);
+            Set<String> referenced = new HashSet<>();
+
+            cr.accept(new ClassVisitor(Opcodes.ASM9) {
+                @Override
+                public MethodVisitor visitMethod(int access, String name, String descriptor,
+                                                 String signature, String[] exceptions) {
+                    return new MethodVisitor(Opcodes.ASM9) {
+                        @Override
+                        public void visitTypeInsn(int opcode, String type) {
+                            // 包含 NEW、CHECKCAST、INSTANCEOF
+                            if (TARGET_ENTITY_CAST_DATA.equals(type)
+                                    || COMPLEX_CAST_DATA_TYPES.contains(type)) {
+                                referenced.add(type);
+                            }
+                        }
+                    };
+                }
+            }, ClassReader.SKIP_DEBUG | ClassReader.SKIP_FRAMES);
+
+            boolean hasBasic = referenced.contains(TARGET_ENTITY_CAST_DATA);
+            boolean hasComplex = false;
+            for (String t : referenced) {
+                if (COMPLEX_CAST_DATA_TYPES.contains(t)) {
+                    hasComplex = true;
+                    break;
+                }
+            }
+
+            boolean result = hasBasic && !hasComplex;
+            if (result) {
+                HexEncrypt.LOGGER.debug(
+                        "[Hex加密][检测] {} → WithTarget（引用类型: {}）",
+                        spell.getSpellName(), referenced);
+            } else if (hasBasic) {
+                HexEncrypt.LOGGER.debug(
+                        "[Hex加密][检测] {} → 非 WithTarget（引用类型: {}）",
+                        spell.getSpellName(), referenced);
+            }
+            return result;
+
+        } catch (Throwable t) {
+            HexEncrypt.LOGGER.debug(
+                    "[Hex加密][检测] 检测 {} 时出错，默认不用 WithTarget: {}",
+                    spell.getSpellName(), t.toString());
+            return false;
+        }
+    }
+
+    // ==================== 其他分类 ====================
+
+    private static String getCastSegment(CastType castType) {
+        if (castType == null) return CAST_NONE;
+        return switch (castType) {
+            case NONE       -> CAST_NONE;
+            case INSTANT    -> CAST_INSTANT;
+            case CONTINUOUS -> CAST_CONTINUOUS;
+            case LONG       -> CAST_LONG;
+        };
+    }
+
+    private static String classifyTarget(AbstractSpell spell) {
+        String n = spell.getSpellName().toLowerCase(Locale.ROOT);
+        if (n.contains("summon") || n.contains("raise_dead")) return "SUMMON";
+        if (SELF_TARGET_SPELLS.contains(n)) return "SELF";
+        return "OTHER";
+    }
+
+    private static String getTargetSegment(String target) {
+        return switch (target) {
+            case "SELF"   -> TARGET_SELF;
+            case "SUMMON" -> TARGET_SUMMON;
+            default       -> TARGET_OTHER;
+        };
+    }
+
+    // ==================== 工具 ====================
+
+    private static long mixSeed(String s) {
         long seed = 0x9E3779B97F4A7C15L;
-        for (int i = 0; i < spellName.length(); i++) {
-            seed = seed * 31L + spellName.charAt(i);
+        for (int i = 0; i < s.length(); i++) {
+            seed = seed * 31L + s.charAt(i);
             seed ^= seed >>> 27;
             seed *= 0x94D049BB133111EBL;
         }
-        Random random = new Random(seed);
-
-        // ---------- 2. 准备字符池 ----------
-        // 只保留 5 种合法转向，'s'(掉头) 会造成自交所以排除
-        char[] turns = {'w', 'e', 'q', 'd', 'a'};
-        HexDir[] dirs = HexDir.values();
-
-        // ---------- 3. 重试直到生成了一个合法且未使用过的签名 ----------
-        for (int attempt = 0; attempt < 1000; attempt++) {
-            // 长度 10~16，与原版 LIGHTNING 图案（"waadwawdaaweewq"，14 字符）量级相当
-            int length = 10 + random.nextInt(7);
-
-            StringBuilder signature = new StringBuilder(length);
-            for (int i = 0; i < length; i++) {
-                signature.append(turns[random.nextInt(turns.length)]);
-            }
-            String sigStr = signature.toString();
-
-            // 二次去重：如果这个签名已经被别的法术用了，换下一个
-            if (USED_SIGNATURES.contains(sigStr)) {
-                continue;
-            }
-
-            HexDir startDir = dirs[random.nextInt(dirs.length)];
-
-            try {
-                HexPattern pattern = HexPattern.fromAngles(sigStr, startDir);
-                // 校验通过：合法（不自交）且未重复
-                USED_SIGNATURES.add(sigStr);
-                HexEncrypt.LOGGER.debug("[Hex加密] 为 {} 生成签名: {} (startDir={})",
-                        uniqueKey, sigStr, startDir);
-                return pattern;
-            } catch (IllegalStateException | IllegalArgumentException ignored) {
-                // 自交或非法转向，换下一个签名重试
-            }
-        }
-
-        // ---------- 4. 兜底 ----------
-        // 走到这里说明 1000 次随机尝试全部自交，概率极低。
-        // 使用一个已被主模组验证过的、确定有多个欧拉路径的签名。
-        HexEncrypt.LOGGER.warn("[Hex加密] 为 {} 随机生成图案失败，使用兜底签名", uniqueKey);
-        return HexPattern.fromAngles("waadwawdaaweewq", HexDir.EAST);
+        return seed;
     }
 
-    private static void printPerWorldPatternJson() {
-        HexEncrypt.LOGGER.info("========== 请复制以下内容保存为 data/hexcasting/tags/action/per_world_pattern.json.disabled ==========");
-        HexEncrypt.LOGGER.info("{");
-        HexEncrypt.LOGGER.info("  \"replace\": false,");
-        HexEncrypt.LOGGER.info("  \"values\": [");
-        for (int i = 0; i < REGISTERED_ISS_SPELL_IDS.size(); i++) {
-            String id = REGISTERED_ISS_SPELL_IDS.get(i);
-            String comma = (i == REGISTERED_ISS_SPELL_IDS.size() - 1) ? "" : ",";
-            HexEncrypt.LOGGER.info("    \"{}\"{}", id, comma);
-        }
-        HexEncrypt.LOGGER.info("  ]");
-        HexEncrypt.LOGGER.info("}");
-        HexEncrypt.LOGGER.info("=================================================================================");
+    private static void printReminder() {
+        HexEncrypt.LOGGER.info("======================================================================");
+        HexEncrypt.LOGGER.info("[Hex加密] 本模组使用“官能团前缀 + hash 后缀”方案生成图案；");
+        HexEncrypt.LOGGER.info("[Hex加密] 每个 ISS 动作都拥有唯一签名，不再依赖打乱。");
+        HexEncrypt.LOGGER.info("[Hex加密] 已注册的 ISS 动作数：{}", REGISTERED_ISS_SPELL_IDS.size());
+        HexEncrypt.LOGGER.info("======================================================================");
     }
 }
