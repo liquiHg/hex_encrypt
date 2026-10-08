@@ -3,10 +3,13 @@ package io.github.liquiHg.hexencrypt;
 import com.mojang.logging.LogUtils;
 import io.github.liquiHg.hexencrypt.integration.ISSHexConfig;
 import io.github.liquiHg.hexencrypt.network.ModNetwork;
+import io.github.liquiHg.hexencrypt.util.HexCastTargetOverride;
 import io.redspace.ironsspellbooks.api.registry.SpellRegistry;
 import io.redspace.ironsspellbooks.api.spells.AbstractSpell;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraftforge.common.MinecraftForge;
+import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.event.server.ServerStartingEvent;
 import net.minecraftforge.eventbus.api.IEventBus;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
@@ -42,6 +45,13 @@ public class HexEncrypt {
     private void commonSetup(final FMLCommonSetupEvent event) {
         event.enqueueWork(ModNetwork::register);
         LOGGER.info("Hex Encryption common setup");
+    }
+
+    @SubscribeEvent
+    public void onPlayerLogout(PlayerEvent.PlayerLoggedOutEvent event) {
+        if (event.getEntity() instanceof ServerPlayer sp) {
+            HexCastTargetOverride.clear(sp);
+        }
     }
 
     @SubscribeEvent

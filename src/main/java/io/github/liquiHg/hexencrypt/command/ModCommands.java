@@ -175,19 +175,32 @@ public class ModCommands {
     private static int giveScroll(CommandContext<CommandSourceStack> ctx) throws CommandSyntaxException {
         ServerPlayer player = ctx.getSource().getPlayerOrException();
         String spellName = StringArgumentType.getString(ctx, "spell");
-        // 兼容带不带 iss_ 前缀
-        String path = spellName.startsWith("iss_") ? spellName : "iss_" + spellName;
-        ResourceLocation id = new ResourceLocation(HexEncrypt.MODID, path);
 
         Registry<ActionRegistryEntry> registry = IXplatAbstractions.INSTANCE.getActionRegistry();
+
+        // 1. 先按原名查（支持 set_target / clear_target）
+        ResourceLocation id = new ResourceLocation(HexEncrypt.MODID, spellName);
         ActionRegistryEntry entry = registry.get(id);
+
+        // 2. 查不到，再按 iss_ 前缀查（兼容原来的用法）
         if (entry == null) {
-            ctx.getSource().sendFailure(Component.literal("未知法术动作: " + id));
+            String path = spellName.startsWith("iss_") ? spellName : "iss_" + spellName;
+            id = new ResourceLocation(HexEncrypt.MODID, path);
+            entry = registry.get(id);
+        }
+
+        if (entry == null) {
+            ctx.getSource().sendFailure(Component.literal("未知动作: " + spellName));
             return 0;
         }
 
-        giveOrDrop(player, makeScroll(entry.prototype()));
-        ctx.getSource().sendSuccess(() -> Component.literal("已给予卷轴: " + id), false);
+        // 3. 拷贝到 final 变量供 lambda 使用
+        final ResourceLocation finalId = id;
+        final ActionRegistryEntry finalEntry = entry;
+
+        giveOrDrop(player, makeScroll(finalEntry.prototype()));
+        ctx.getSource().sendSuccess(
+                () -> Component.literal("已给予卷轴: " + finalId), false);
         return 1;
     }
 

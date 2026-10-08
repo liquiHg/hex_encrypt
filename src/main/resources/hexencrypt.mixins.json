@@ -10,8 +10,10 @@
     "ArcaneAnvilMenuMixin",
     "ItemCombinerMenuAccessor",
     "SpellSelectionManagerMixin",
-    "ItemCombinerMenuMixin"
+    "ItemCombinerMenuMixin",
+    "UtilsMixin"
   ],
-  "client": [],
+  "client": [
+    "GuiSpellcastingMixin"],
   "server": []
 }

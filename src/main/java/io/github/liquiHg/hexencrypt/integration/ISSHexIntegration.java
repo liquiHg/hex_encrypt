@@ -6,9 +6,7 @@ import at.petrak.hexcasting.api.casting.math.HexDir;
 import at.petrak.hexcasting.api.casting.math.HexPattern;
 import at.petrak.hexcasting.xplat.IXplatAbstractions;
 import io.github.liquiHg.hexencrypt.HexEncrypt;
-import io.github.liquiHg.hexencrypt.actions.OpCastContinuousIronsSpell;
-import io.github.liquiHg.hexencrypt.actions.OpCastIronsSpell;
-import io.github.liquiHg.hexencrypt.actions.OpCastIronsSpellWithTarget;
+import io.github.liquiHg.hexencrypt.actions.*;
 import io.redspace.ironsspellbooks.api.registry.SpellRegistry;
 import io.redspace.ironsspellbooks.api.spells.AbstractSpell;
 import io.redspace.ironsspellbooks.api.spells.CastType;
@@ -216,9 +214,37 @@ public class ISSHexIntegration {
         withTargetNames.sort(String::compareTo);
         HexEncrypt.LOGGER.info("[Hex加密] 走 WithTarget 操作符的法术: {}", withTargetNames);
 
-        printReminder();
+        // ---- 注册两个自定义动作 ----
+        registerCustomAction(actionRegistry,
+                new ResourceLocation(HexEncrypt.MODID, "set_target"),
+                "weaqawawaeweweweweweeewaqqqqqwewddaqaew",
+                HexDir.NORTH_WEST,
+                new OpSetTargetVec());
+
+        registerCustomAction(actionRegistry,
+                new ResourceLocation(HexEncrypt.MODID, "clear_target"),
+                "aedwewewewewewqwwdewwewadaewwwdewwewa",
+                HexDir.EAST,
+                new OpClearTarget());
     }
 
+    /** 注册一个 Hex 动作的辅助方法。 */
+    private static void registerCustomAction(Registry<ActionRegistryEntry> registry,
+                                             ResourceLocation id,
+                                             String angles,
+                                             HexDir startDir,
+                                             Action action) {
+        try {
+            // 使用 fromAnglesUnchecked 绕过长度检查和自环检查
+            HexPattern pattern = HexPattern.fromAnglesUnchecked(angles, startDir);
+            Registry.register(registry, id, new ActionRegistryEntry(pattern, action));
+            REGISTERED_ISS_SPELL_IDS.add(id.toString());
+            HexEncrypt.LOGGER.info("[Hex加密] 注册自定义动作: {} (startDir={}, len={})",
+                    id, startDir, angles.length());
+        } catch (Throwable t) {
+            HexEncrypt.LOGGER.error("[Hex加密] 注册自定义动作 {} 失败", id, t);
+        }
+    }
     // ==================== 主流程 ====================
 
     private static HexPattern generateStructuredPattern(AbstractSpell spell, String hexId) {
