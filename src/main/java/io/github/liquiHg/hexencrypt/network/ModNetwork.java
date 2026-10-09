@@ -29,9 +29,20 @@ public class ModNetwork {
                 .decoder(SyncUnlockedSpellsPacket::decode)
                 .consumerMainThread(SyncUnlockedSpellsPacket::handle)
                 .add();
+
+        // 新增：音色同步
+        CHANNEL.messageBuilder(SyncTimbrePacket.class, nextId())
+                .encoder(SyncTimbrePacket::encode)
+                .decoder(SyncTimbrePacket::new)
+                .consumerMainThread(SyncTimbrePacket::handle)
+                .add();
     }
 
     public static void sendUnlockedSpells(ServerPlayer player, Set<String> spells) {
         CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), new SyncUnlockedSpellsPacket(spells));
+    }
+
+    public static void sendTimbre(ServerPlayer player, String timbre) {
+        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), new SyncTimbrePacket(timbre));
     }
 }

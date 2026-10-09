@@ -55,6 +55,15 @@ public class HexEncrypt {
     }
 
     @SubscribeEvent
+    public void onPlayerLogin(PlayerEvent.PlayerLoggedInEvent event) {
+        if (event.getEntity() instanceof ServerPlayer sp) {
+            String saved = sp.getPersistentData().getString("hexencrypt:timbre");
+            if (saved == null || saved.isEmpty()) saved = "default";
+            ModNetwork.sendTimbre(sp, saved);
+        }
+    }
+
+    @SubscribeEvent
     public void onServerStarting(ServerStartingEvent event) {
         LOGGER.info("Hex Encryption server starting");
     }

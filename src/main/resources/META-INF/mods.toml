@@ -4,7 +4,7 @@ license="All Rights Reserved"
 
 [[mods]]
 modId="hexencrypt"
-version="1.0.0"
+version="1.5.0"
 displayName="Hex Encryption"
 authors="liquiHg"
 description='''Encrypt Iron's Spells scrolls with Hex Casting patterns.'''
