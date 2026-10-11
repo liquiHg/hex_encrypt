@@ -18,7 +18,8 @@ public class ModBlocks {
     public static final DeferredRegister<Item> ITEMS =
             DeferredRegister.create(ForgeRegistries.ITEMS, HexEncrypt.MODID);
 
-    public static final RegistryObject<SpellInscriptionTableBlock> SPELL_INSCRIPTION_TABLE =
+    /** 泛型改成 Block（原来是 SpellInscriptionTableBlock），避免子类编译状态影响注册表本身。 */
+    public static final RegistryObject<Block> SPELL_INSCRIPTION_TABLE =
             BLOCKS.register("spell_analysis_table",
                     () -> new SpellInscriptionTableBlock(
                             BlockBehaviour.Properties.copy(Blocks.DEEPSLATE_BRICKS)

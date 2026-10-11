@@ -2,6 +2,7 @@ package io.github.liquiHg.hexencrypt.block;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.Containers;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
@@ -14,6 +15,8 @@ import net.minecraft.world.level.block.BaseEntityBlock;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.RenderShape;
 import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.block.entity.BlockEntityTicker;
+import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.StateDefinition;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
@@ -108,11 +111,27 @@ public class SpellInscriptionTableBlock extends BaseEntityBlock {
         }
 
         // 3) 空手 + 不潜行 → 打开 UI
-        player.openMenu(table);
+        // ⭐ 带 pos 的重载：客户端通过 pos 找到同一个 BlockEntity
+        if (player instanceof ServerPlayer sp) {
+            sp.openMenu(table);
+        }
         return InteractionResult.CONSUME;
     }
 
     // ==================== 方块实体 ====================
+
+    @Nullable
+    @Override
+    public <T extends BlockEntity> BlockEntityTicker<T> getTicker(
+            Level level, BlockState state, BlockEntityType<T> type) {
+        if (level.isClientSide) return null;   // 只在服务端跑
+        return (lvl, pos, st, be) -> {
+            if (be instanceof SpellInscriptionTableBlockEntity table) {
+                table.tickRecharge();
+                table.tickResolvePendingIota();   // ⭐ 新增：延迟解析 iota
+            }
+        };
+    }
 
     @Nullable
     @Override
@@ -126,10 +145,17 @@ public class SpellInscriptionTableBlock extends BaseEntityBlock {
         if (!state.is(newState.getBlock())) {
             BlockEntity be = level.getBlockEntity(pos);
             if (be instanceof SpellInscriptionTableBlockEntity table) {
-                ItemStack stack = table.getStoredItem();
-                if (!stack.isEmpty()) {
-                    Containers.dropItemStack(level, pos.getX(), pos.getY(), pos.getZ(), stack);
+                // 中央槽物品 + 媒质槽物品都掉落
+                ItemStack stored = table.getStoredItem();
+                if (!stored.isEmpty()) {
+                    Containers.dropItemStack(level, pos.getX(), pos.getY(), pos.getZ(), stored);
                 }
+                ItemStack media = table.getMediaItem();
+                if (!media.isEmpty()) {
+                    Containers.dropItemStack(level, pos.getX(), pos.getY(), pos.getZ(), media);
+                }
+                // 注意：象限图案 / 栈 iota 不会掉落，随方块一起消失
+                // 如果你想让它们也掉落（比如掉成一个特殊物品），在这里加逻辑
             }
         }
         super.onRemove(state, level, pos, newState, movedByPiston);

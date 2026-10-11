@@ -8,6 +8,8 @@ import at.petrak.hexcasting.api.casting.math.HexPattern;
 import at.petrak.hexcasting.xplat.IXplatAbstractions;
 import io.github.liquiHg.hexencrypt.HexEncrypt;
 import io.github.liquiHg.hexencrypt.actions.*;
+import io.github.liquiHg.hexencrypt.api.SpellComparators;
+import io.github.liquiHg.hexencrypt.comparator.FunctionalGroupComparator;
 import io.redspace.ironsspellbooks.api.registry.SpellRegistry;
 import io.redspace.ironsspellbooks.api.spells.AbstractSpell;
 import io.redspace.ironsspellbooks.api.spells.CastType;
@@ -220,7 +222,11 @@ public class ISSHexIntegration {
 
     @SubscribeEvent
     public static void onCommonSetup(FMLCommonSetupEvent event) {
+        HexEncrypt.LOGGER.info("[Hex加密] onCommonSetup 触发！");   // ★ 加这行
         event.enqueueWork(ISSHexIntegration::registerAllHexActions);
+        SpellComparators.register(new FunctionalGroupComparator());
+        HexEncrypt.LOGGER.info("[Hex加密] 比较器已注册，数量={}",
+                SpellComparators.all().size());                     // ★ 加这行
     }
 
     private static void registerAllHexActions() {
@@ -754,6 +760,22 @@ public class ISSHexIntegration {
             case "SUMMON" -> TARGET_SUMMON;
             default       -> TARGET_OTHER;
         };
+    }
+
+    /**
+     * 返回所有已注册的 ISS 动作：id → 图案。
+     * 只返回命名空间 = HexEncrypt.MODID 且路径以 "iss_" 开头的条目。
+     */
+    public static Map<ResourceLocation, HexPattern> getIssPatterns() {
+        Map<ResourceLocation, HexPattern> out = new LinkedHashMap<>();
+        Registry<ActionRegistryEntry> registry = IXplatAbstractions.INSTANCE.getActionRegistry();
+        for (var entry : registry.entrySet()) {
+            ResourceLocation id = entry.getKey().location();
+            if (!id.getNamespace().equals(HexEncrypt.MODID)) continue;
+            if (!id.getPath().startsWith("iss_")) continue;
+            out.put(id, entry.getValue().prototype());
+        }
+        return out;
     }
 
     // ==================== 工具 ====================
