@@ -38,8 +38,13 @@ public class ISSHexIntegration {
     private static final List<String> PHASE_B_NAMES = new ArrayList<>();
     private static final List<String> PHASE_C_NAMES = new ArrayList<>();
 
-    /** 全局共享的随机源，避免每次递归 new Random() 造成性能浪费与近似种子。 */
-    private static final Random RANDOM = new Random();
+    /**
+     * 全局随机源。不再使用 final —— 每次生成某个法术的图案前，
+     * 会用该法术名派生的确定性种子重新初始化。
+     * 效果：同一个法术在任何一次启动中都会生成完全相同的图案。
+     * 不同法术之间互不干扰（一个法术消耗的随机数不会影响另一个）。
+     */
+    private static Random RANDOM = new Random();
 
     // ==================== 官能团段位定义 ====================
 
@@ -389,6 +394,9 @@ public class ISSHexIntegration {
      * 独立自交的后缀字符串（isSelfAvoiding 预验证）。
      */
     private static HexPattern generateStructuredPattern(AbstractSpell spell, String hexId) {
+        // ★ 确定性种子：同一法术每次启动得到相同图案
+        RANDOM.setSeed(mixSeed(spell.getSpellName()));
+
         String school     = getSchoolSegment(spell);
         String targetKind = classifyTarget(spell);
         String target     = getTargetSegment(targetKind);

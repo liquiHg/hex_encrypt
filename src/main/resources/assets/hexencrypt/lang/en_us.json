@@ -1,3 +1,6 @@
 {
-  "hexencrypt.message.spell_locked": "You must learn this spell first!"
+  "hexencrypt.message.spell_locked": "You must learn this spell first!",
+  "hexencrypt.unlock.success": "Unlocked ISS spell: %s",
+  "block.hexencrypt.spell_inscription_table": "Spell Analysis Table",
+  "container.hexencrypt.spell_inscription_table": "Spell Analysis Table"
 }

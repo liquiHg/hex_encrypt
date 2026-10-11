@@ -1,3 +1,6 @@
 {
-  "hexencrypt.message.spell_locked": "必须先学习此法术！"
+  "hexencrypt.message.spell_locked": "必须先学习此法术！",
+  "hexencrypt.unlock.success": "已解锁 ISS 法术：%s",
+  "block.hexencrypt.spell_inscription_table": "法术解析台",
+  "container.hexencrypt.spell_inscription_table": "法术解析台"
 }

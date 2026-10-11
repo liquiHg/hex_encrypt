@@ -10,7 +10,9 @@ import net.minecraftforge.network.simple.SimpleChannel;
 import java.util.Set;
 
 public class ModNetwork {
+
     private static final String PROTOCOL_VERSION = "1";
+
     public static final SimpleChannel CHANNEL = NetworkRegistry.newSimpleChannel(
             new ResourceLocation(HexEncrypt.MODID, "main"),
             () -> PROTOCOL_VERSION,
@@ -30,7 +32,6 @@ public class ModNetwork {
                 .consumerMainThread(SyncUnlockedSpellsPacket::handle)
                 .add();
 
-        // 新增：音色同步
         CHANNEL.messageBuilder(SyncTimbrePacket.class, nextId())
                 .encoder(SyncTimbrePacket::encode)
                 .decoder(SyncTimbrePacket::new)
@@ -38,11 +39,15 @@ public class ModNetwork {
                 .add();
     }
 
+    /** 推送完整解锁集合（幂等全量覆盖）。 */
     public static void sendUnlockedSpells(ServerPlayer player, Set<String> spells) {
-        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), new SyncUnlockedSpellsPacket(spells));
+        if (player == null) return;
+        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                new SyncUnlockedSpellsPacket(spells));
     }
 
     public static void sendTimbre(ServerPlayer player, String timbre) {
+        if (player == null) return;
         CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), new SyncTimbrePacket(timbre));
     }
 }

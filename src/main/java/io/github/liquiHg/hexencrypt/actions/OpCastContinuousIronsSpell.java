@@ -13,6 +13,7 @@ import at.petrak.hexcasting.api.casting.mishaps.MishapInvalidIota;
 import at.petrak.hexcasting.api.casting.mishaps.MishapNotEnoughArgs;
 import at.petrak.hexcasting.common.lib.hex.HexEvalSounds;
 import io.github.liquiHg.hexencrypt.HexEncrypt;
+import io.github.liquiHg.hexencrypt.util.SpellUnlockManager;
 import io.redspace.ironsspellbooks.api.magic.MagicData;
 import io.redspace.ironsspellbooks.api.registry.SpellRegistry;
 import io.redspace.ironsspellbooks.api.spells.AbstractSpell;
@@ -181,9 +182,17 @@ public class OpCastContinuousIronsSpell implements Action {
         magicData.setPlayerCastingItem(serverPlayer.getMainHandItem());
 
         // 9.4 前置效果 + 施法
+        // 9.4 前置效果 + 施法
         try {
             spell.onServerPreCast(env.getWorld(), level, serverPlayer, magicData);
             spell.castSpell(env.getWorld(), level, serverPlayer, CastSource.SPELLBOOK, false);
+
+            // 首次施法成功：仅当玩家主动打开 Hex 网格绘制时解锁 ISS 法术
+            // （后续每 tick 都会再次进入本方法，但 tryUnlockBySpellId 内部
+            //   有幂等判重，不会重复写盘 / 刷屏）
+            if (SpellUnlockManager.isPlayerInitiatedCasting(env)) {
+                SpellUnlockManager.tryUnlockBySpellId(serverPlayer, this.spellId);
+            }
         } catch (Throwable t) {
             HexEncrypt.LOGGER.error("[Hex加密] spell.castSpell 抛出异常 spell={} level={}",
                     this.spellId, level, t);

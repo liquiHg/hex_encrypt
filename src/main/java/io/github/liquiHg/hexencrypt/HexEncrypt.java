@@ -3,6 +3,9 @@ package io.github.liquiHg.hexencrypt;
 import com.mojang.logging.LogUtils;
 import io.github.liquiHg.hexencrypt.integration.ISSHexConfig;
 import io.github.liquiHg.hexencrypt.network.ModNetwork;
+import io.github.liquiHg.hexencrypt.registry.ModBlockEntities;
+import io.github.liquiHg.hexencrypt.registry.ModBlocks;
+import io.github.liquiHg.hexencrypt.registry.ModMenuTypes;
 import io.github.liquiHg.hexencrypt.util.HexCastTargetOverride;
 import io.redspace.ironsspellbooks.api.registry.SpellRegistry;
 import io.redspace.ironsspellbooks.api.spells.AbstractSpell;
@@ -40,6 +43,12 @@ public class HexEncrypt {
 
         ModItems.ITEMS.register(modEventBus);
         // 移除 ModActions.ACTIONS.register(modEventBus);
+
+        ModBlocks.BLOCKS.register(FMLJavaModLoadingContext.get().getModEventBus());
+        ModBlocks.ITEMS.register(FMLJavaModLoadingContext.get().getModEventBus());
+        ModBlockEntities.BLOCK_ENTITIES.register(FMLJavaModLoadingContext.get().getModEventBus());
+        ModMenuTypes.MENUS.register(FMLJavaModLoadingContext.get().getModEventBus());
+
     }
 
     private void commonSetup(final FMLCommonSetupEvent event) {

@@ -13,6 +13,7 @@ import at.petrak.hexcasting.api.casting.mishaps.MishapInvalidIota;
 import at.petrak.hexcasting.api.casting.mishaps.MishapNotEnoughArgs;
 import at.petrak.hexcasting.common.lib.hex.HexEvalSounds;
 import io.github.liquiHg.hexencrypt.HexEncrypt;
+import io.github.liquiHg.hexencrypt.util.SpellUnlockManager;
 import io.redspace.ironsspellbooks.api.magic.MagicData;
 import io.redspace.ironsspellbooks.api.registry.SpellRegistry;
 import io.redspace.ironsspellbooks.api.spells.AbstractSpell;
@@ -153,6 +154,11 @@ public class OpCastIronsSpellWithTarget implements Action {
         try {
             spell.onServerPreCast(env.getWorld(), level, serverPlayer, magicData);
             spell.castSpell(env.getWorld(), level, serverPlayer, CastSource.SPELLBOOK, false);
+
+            // 施法成功：仅当玩家主动打开 Hex 网格绘制时解锁 ISS 法术
+            if (SpellUnlockManager.isPlayerInitiatedCasting(env)) {
+                SpellUnlockManager.tryUnlockBySpellId(serverPlayer, this.spellId);
+            }
         } catch (Throwable t) {
             HexEncrypt.LOGGER.error("[Hex加密] spell.castSpell 抛出异常 spell={} level={}",
                     this.spellId, level, t);
