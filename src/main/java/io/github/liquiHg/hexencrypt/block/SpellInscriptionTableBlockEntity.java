@@ -16,9 +16,12 @@ import io.github.liquiHg.hexencrypt.api.ComparisonResult;
 import io.github.liquiHg.hexencrypt.api.InscriptionTableAccess;
 import io.github.liquiHg.hexencrypt.api.SpellComparators;
 import io.github.liquiHg.hexencrypt.registry.ModBlockEntities;
+import io.redspace.ironsspellbooks.api.registry.SpellRegistry;
+import io.redspace.ironsspellbooks.api.spells.SpellData;
 import net.minecraft.core.BlockPos;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
+import net.minecraft.nbt.NbtOps;
 import net.minecraft.nbt.Tag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.protocol.game.ClientboundBlockEntityDataPacket;
@@ -342,19 +345,11 @@ public class SpellInscriptionTableBlockEntity extends BlockEntity implements Men
     }
 
     /**
-     * 从 Iron's Spellbooks 的卷轴中提取对应的 Hex 图案。
-     *
-     * ISS 卷轴的 NBT 结构：
-     *   tag["irons_spellbooks:spell_container"]
-     *     └─ "data": ListTag
-     *          └─ [0]: CompoundTag
-     *               └─ "id": "irons_spellbooks:magic_arrow"
-     *
-     * 我们把 spell id 的 path 拼成 hex id：hexencrypt:iss_<path>，
-     * 再从 Hex 动作注册表里反查它的 prototype（= 注册时用的 HexPattern）。
+     * 从 ISS 卷轴中读出 spell id（不构造图案）。
+     * 供 getCentralPattern() 和 getCentralSpellId() 共用。
      */
     @Nullable
-    private static HexPattern extractPatternFromIssScroll(ItemStack stack) {
+    private static ResourceLocation extractIssSpellId(ItemStack stack) {
         CompoundTag tag = stack.getTag();
         if (tag == null) return null;
         if (!tag.contains("irons_spellbooks:spell_container", Tag.TAG_COMPOUND)) return null;
@@ -363,19 +358,41 @@ public class SpellInscriptionTableBlockEntity extends BlockEntity implements Men
         ListTag data = container.getList("data", Tag.TAG_COMPOUND);
         if (data.isEmpty()) return null;
 
-        // 取第一个法术（ISS 卷轴通常只装 1 个；多法术时取第一个）
-        CompoundTag first = data.getCompound(0);
-        String spellIdStr = first.getString("id");
-        if (spellIdStr.isEmpty()) return null;
+        SpellData spellData;
+        try {
+            spellData = SpellData.CODEC
+                    .parse(NbtOps.INSTANCE, data.getCompound(0))
+                    .result()
+                    .orElse(null);
+        } catch (Exception e) {
+            return null;
+        }
+        if (spellData == null || spellData.getSpell() == SpellRegistry.none()) return null;
+        return spellData.getSpell().getSpellResource();
+    }
 
-        ResourceLocation spellId = ResourceLocation.tryParse(spellIdStr);
+    /**
+     * 从 Iron's Spellbooks 的卷轴中提取对应的 Hex 图案。
+     *
+     * ISS 卷轴的 NBT 结构：
+     *   tag["irons_spellbooks:spell_container"]
+     *     └─ "data": ListTag
+     *          └─ [0]: CompoundTag，包含 SpellData 的序列化数据
+     *
+     * 我们使用 SpellData.CODEC 进行反序列化，获取 spell id，
+     * 再从 Hex 动作注册表里反查它的 prototype（= 注册时用的 HexPattern）。
+     */
+    @Nullable
+    private static HexPattern extractPatternFromIssScroll(ItemStack stack) {
+        ResourceLocation spellId = extractIssSpellId(stack);
         if (spellId == null) return null;
 
-        // 构造 hex id：hexencrypt:iss_<spellPath>
         ResourceLocation hexId = new ResourceLocation(HexEncrypt.MODID, "iss_" + spellId.getPath());
-
         var entry = IXplatAbstractions.INSTANCE.getActionRegistry().get(hexId);
-        if (entry == null) return null;
+        if (entry == null) {
+            HexEncrypt.LOGGER.warn("[解析台] ISS spellId={} → 找不到 hexId={}", spellId, hexId);
+            return null;
+        }
         return entry.prototype();
     }
 
@@ -436,6 +453,13 @@ public class SpellInscriptionTableBlockEntity extends BlockEntity implements Men
                     if (fromIss != null) return fromIss;
 
                     return null;
+                }
+
+                @Override
+                public ResourceLocation getCentralSpellId() {
+                    ItemStack s = storedItem;
+                    if (s.isEmpty()) return null;
+                    return extractIssSpellId(s);   // 非 ISS 卷轴会返回 null，正常
                 }
 
                 @Override public HexPattern[] getStackPatterns() {

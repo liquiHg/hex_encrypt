@@ -2,6 +2,7 @@ package io.github.liquiHg.hexencrypt.api;
 
 import at.petrak.hexcasting.api.casting.math.HexPattern;
 import net.minecraft.core.BlockPos;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 import org.jetbrains.annotations.Nullable;
@@ -19,6 +20,11 @@ public interface InscriptionTableAccess {
 
     /** 中央槽物品。可能为空 ItemStack（永不返回 null）。 */
     ItemStack getCentralItem();
+
+    @Nullable
+    default ResourceLocation getCentralSpellId() {
+        return null;
+    }
 
     /** 中央槽物品中提取出的 HexPattern；没有则为 null。 */
     @Nullable HexPattern getCentralPattern();

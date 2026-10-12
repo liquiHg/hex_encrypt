@@ -1,5 +1,6 @@
 package io.github.liquiHg.hexencrypt.block;
 
+import at.petrak.hexcasting.api.casting.iota.GarbageIota;
 import at.petrak.hexcasting.api.casting.iota.Iota;
 import at.petrak.hexcasting.api.casting.iota.PatternIota;
 import at.petrak.hexcasting.api.casting.math.HexAngle;
@@ -8,12 +9,24 @@ import at.petrak.hexcasting.api.casting.math.HexPattern;
 import at.petrak.hexcasting.api.item.IotaHolderItem;
 import at.petrak.hexcasting.common.items.storage.ItemScroll;
 import at.petrak.hexcasting.common.lib.HexItems;
+import at.petrak.hexcasting.common.lib.HexSounds;
 import at.petrak.hexcasting.common.lib.hex.HexIotaTypes;
 import io.github.liquiHg.hexencrypt.api.ComparisonResult;
+import io.github.liquiHg.hexencrypt.integration.ISSHexIntegration;
 import io.github.liquiHg.hexencrypt.registry.ModBlocks;
 import io.github.liquiHg.hexencrypt.registry.ModMenuTypes;
+import net.minecraft.core.BlockPos;
+import net.minecraft.core.particles.DustParticleOptions;
+import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.ListTag;
+import net.minecraft.nbt.StringTag;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.MutableComponent;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.sounds.SoundEvents;
+import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.Container;
 import net.minecraft.world.SimpleContainer;
 import net.minecraft.world.entity.player.Inventory;
@@ -23,11 +36,14 @@ import net.minecraft.world.inventory.ContainerData;
 import net.minecraft.world.inventory.ContainerLevelAccess;
 import net.minecraft.world.inventory.Slot;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.Items;
 import org.jetbrains.annotations.Nullable;
 import net.minecraft.world.level.block.Block;
+import org.joml.Vector3f;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 public class SpellInscriptionTableMenu extends AbstractContainerMenu {
 
@@ -52,6 +68,44 @@ public class SpellInscriptionTableMenu extends AbstractContainerMenu {
     // === 消耗 ===
     public static final int COST_DRAW = 1;
     public static final int COST_UNDO = 2;
+
+    /** 匹配分类结果。 */
+    private enum MatchKind {
+        DEEP,      // 顺序正确的 school + target + cast
+        SHALLOW,   // 至少有一段不是官能团
+        MISHAP     // 三段都是官能团，但顺序不对
+    }
+
+    // ==================== 官能团分类（用于深度匹配判定） ====================
+
+    /** school 段集合：10 个学派 + fallback。 */
+    private static final Set<String> SCHOOL_SIGS = Set.of(
+            ISSHexIntegration.SCHOOL_ELDRITCH,
+            ISSHexIntegration.SCHOOL_NATURE,
+            ISSHexIntegration.SCHOOL_LIGHTNING,
+            ISSHexIntegration.SCHOOL_ICE,
+            ISSHexIntegration.SCHOOL_BLOOD,
+            ISSHexIntegration.SCHOOL_EVOCATION,
+            ISSHexIntegration.SCHOOL_HOLY,
+            ISSHexIntegration.SCHOOL_ENDER,
+            ISSHexIntegration.SCHOOL_FIRE,
+            ISSHexIntegration.SCHOOL_FALLBACK
+    );
+
+    /** target 段集合：3 个目标类型。 */
+    private static final Set<String> TARGET_SIGS = Set.of(
+            ISSHexIntegration.TARGET_SELF,
+            ISSHexIntegration.TARGET_OTHER,
+            ISSHexIntegration.TARGET_SUMMON
+    );
+
+    /** cast 段集合：4 种施法类型。 */
+    private static final Set<String> CAST_SIGS = Set.of(
+            ISSHexIntegration.CAST_NONE,
+            ISSHexIntegration.CAST_INSTANT,
+            ISSHexIntegration.CAST_CONTINUOUS,
+            ISSHexIntegration.CAST_LONG
+    );
 
     private final SpellInscriptionTableBlockEntity blockEntity;
     private final Container container;          // 中央槽
@@ -198,125 +252,307 @@ public class SpellInscriptionTableMenu extends AbstractContainerMenu {
     }
 
     /**
-     * 尝试从当前方块输入中解析出对应的 ISS 法术。
-     *
-     * 输入：
-     *   - 中央槽：一个含 HexPattern 的物品（如卷轴）
-     *   - 至少 3 个象限的栈：分别是官能团段（school / target / cast）
-     *
-     * 匹配逻辑：
-     *   按象限编号顺序（0→1→2→...）依次在中央槽图案中查找每个栈图案出现的位置；
-     *   若所有栈图案都能按顺序找到且不重叠 → 匹配成功。
-     *
-     * 成功输出：
-     *   - 聊天消息（后缀长度 + 各字符计数 + 后缀原文）
-     *   - 一张"缺后缀"的大型卷轴
+     * 创建并给予玩家一本包含解析结果的成书。
      */
-    public boolean srvTryParse(Player player) {
-        if (blockEntity == null) {
-            player.sendSystemMessage(Component.literal("§c[调试] blockEntity == null"));
-            return false;
+    private static String pickBookTitle(Player player) {
+        if (player instanceof ServerPlayer sp) {
+            String lang = sp.getLanguage();      // ★ 用 getLanguage()
+            if (lang.startsWith("zh")) return "法术解析结果";
+        }
+        return "Spell Analysis Result";
+    }
+
+    private void giveParseResultBook(Player player, ComparisonResult.Matched m) {
+        ItemStack book = new ItemStack(Items.WRITTEN_BOOK);
+        CompoundTag bookTag = new CompoundTag();
+
+        bookTag.putString("title", pickBookTitle(player));
+        bookTag.putString("author", player.getName().getString());
+        bookTag.putInt("generation", 0);
+        bookTag.putBoolean("resolved", true);
+
+        ListTag pages = new ListTag();
+
+        // ===== 第 1 页 =====
+        MutableComponent page1 = Component.empty()          // ★ MutableComponent
+                .append(Component.translatable("hexencrypt.book.parse.header"))
+                .append("\n")
+                .append(Component.translatable("hexencrypt.book.parse.matched"));
+        pages.add(StringTag.valueOf(Component.Serializer.toJson(page1)));
+
+        // ===== 第 2 页 =====
+        MutableComponent page2 = Component.empty();         // ★ MutableComponent
+        if (m.issSpellId() != null) {
+            page2.append(Component.translatable(
+                    "hexencrypt.book.parse.spellId",
+                    m.issSpellId().toString()));
+            page2.append("\n");
+        }
+        page2.append(Component.translatable(
+                "hexencrypt.book.parse.groupCount",
+                m.quadrantOrder().size()));
+        pages.add(StringTag.valueOf(Component.Serializer.toJson(page2)));
+
+        // ===== 第 3 页 =====
+        int cQ = m.counts().getOrDefault('q', 0);
+        int cW = m.counts().getOrDefault('w', 0);
+        int cE = m.counts().getOrDefault('e', 0);
+        int cA = m.counts().getOrDefault('a', 0);
+        int cD = m.counts().getOrDefault('d', 0);
+
+        MutableComponent page3 = Component.empty()          // ★ MutableComponent
+                .append(Component.translatable(
+                        "hexencrypt.book.parse.suffixLength", m.suffixLength()))
+                .append("\n")
+                .append(Component.translatable(
+                        "hexencrypt.book.parse.suffixCounts",
+                        cQ, cW, cE, cA, cD));
+        pages.add(StringTag.valueOf(Component.Serializer.toJson(page3)));
+
+        bookTag.put("pages", pages);
+        book.setTag(bookTag);
+
+        if (!player.getInventory().add(book)) {
+            player.drop(book, false);
+        }
+    }
+
+    /**
+     * 分类本次匹配。
+     *
+     * <ul>
+     *   <li>3 段全部命中官能团且顺序为 school + target + cast → {@link MatchKind#DEEP}</li>
+     *   <li>3 段全部命中官能团但顺序不对 → {@link MatchKind#MISHAP}</li>
+     *   <li>有任意一段不是官能团 → {@link MatchKind#SHALLOW}</li>
+     * </ul>
+     */
+    private MatchKind classifyMatch(ComparisonResult.Matched m) {
+        List<Integer> order = m.quadrantOrder();
+        if (order.size() != 3) return MatchKind.SHALLOW;
+
+        List<String> sigs = new ArrayList<>(3);
+        for (int q : order) {
+            Iota iota = blockEntity.getQuadrantStackIota(q);
+            if (!(iota instanceof PatternIota pi)) return MatchKind.SHALLOW;
+            sigs.add(pi.getPattern().anglesSignature());
         }
 
-        // ★ 若你已按修改清单改用 runComparison，加在这里：
-        var result = blockEntity.runComparison(null, player);
-        player.sendSystemMessage(Component.literal("§c[调试] runComparison 返回=" + result));
-        if (!(result instanceof ComparisonResult.Matched m)) {
-            player.sendSystemMessage(Component.literal("§c[调试] 未匹配：" + result));
-            return false;
+        boolean allKnown = isKnownSegment(sigs.get(0))
+                && isKnownSegment(sigs.get(1))
+                && isKnownSegment(sigs.get(2));
+
+        if (!allKnown) return MatchKind.SHALLOW;
+
+        if (SCHOOL_SIGS.contains(sigs.get(0))
+                && TARGET_SIGS.contains(sigs.get(1))
+                && CAST_SIGS.contains(sigs.get(2))) {
+            return MatchKind.DEEP;
         }
 
-        // 1) 从中央槽提取 HexPattern
-        HexPattern fullPattern = extractPatternFromCentralSlot();
-        if (fullPattern == null) return false;
+        return MatchKind.MISHAP;
+    }
 
-        // 2) 收集所有有栈的象限（按索引升序）
-        List<Integer> stackQuads = new ArrayList<>();
-        for (int q = 0; q < SpellInscriptionTableBlockEntity.QUADRANT_COUNT; q++) {
-            if (blockEntity.getQuadrantStackIota(q) instanceof PatternIota) {
-                stackQuads.add(q);
-            }
-        }
-        if (stackQuads.size() < 3) return false;
+    private static boolean isKnownSegment(String sig) {
+        return SCHOOL_SIGS.contains(sig)
+                || TARGET_SIGS.contains(sig)
+                || CAST_SIGS.contains(sig);
+    }
 
-        // 3) 依次在 fullSig 中查找每段
-        String fullSig = fullPattern.anglesSignature();
+    /**
+     * 浅度探测的经验奖励分段函数。
+     *
+     * <pre>
+     *   x 范围         经验值
+     *   0  – 15        2x + 7
+     *   16 – 30        5x - 38
+     *   31 及以上      9x - 158
+     * </pre>
+     *
+     * @param x 大型卷轴中的边数（即 {@code m.matchedSegmentEnd()}）
+     */
+    private static int calcShallowXp(int x) {
+        if (x <= 15) return 2 * x + 7;
+        if (x <= 30) return 5 * x - 38;
+        return 9 * x - 158;
+    }
+
+    /**
+     * 用和 FunctionalGroupComparator 相同的 indexOf 逻辑重跑一遍，
+     * 返回"按顺序成功匹配"的象限列表。
+     *
+     * <p>中途遇到找不到的象限时停止——它以及它之后的都算未匹配。
+     * <p>只有走 {@code matched.add(q)} 的象限才算匹配成功。
+     *
+     * <p>未匹配时用它决定哪些栈该被垃圾化（保留匹配成功的部分）。
+     */
+    private List<Integer> findMatchedQuadrants() {
+        List<Integer> matched = new ArrayList<>();
+        if (blockEntity == null) return matched;
+
+        HexPattern central = blockEntity.asAccess().getCentralPattern();
+        if (central == null) return matched;
+
+        String fullSig = central.anglesSignature();
         int cursor = 0;
-        List<Integer> segmentEnds = new ArrayList<>();
 
-        for (int q : stackQuads) {
+        for (int q = 0; q < SpellInscriptionTableBlockEntity.QUADRANT_COUNT; q++) {
             Iota iota = blockEntity.getQuadrantStackIota(q);
             if (!(iota instanceof PatternIota pi)) continue;
             String sub = pi.getPattern().anglesSignature();
             if (sub.isEmpty()) continue;
 
             int pos = fullSig.indexOf(sub, cursor);
-            if (pos < 0) {
-                player.sendSystemMessage(Component.literal(
-                        "§c[法术解析] 匹配失败：象限 " + (q + 1)
-                                + " 的图案 §f" + sub + "§c 未在中央图案的后续位置找到"));
-                return false;
-            }
+            if (pos < 0) break;
             cursor = pos + sub.length();
-            segmentEnds.add(cursor);
+            matched.add(q);
+        }
+        return matched;
+    }
+
+    public boolean srvTryParse(Player player) {
+        if (blockEntity == null) {
+            player.sendSystemMessage(Component.literal("§c[法术解析] 方块实体不存在"));
+            return false;
         }
 
-        // 4) 后缀统计
-        String suffix = fullSig.substring(cursor);
-        int suffixLen = suffix.length();
+        ServerPlayer sp = (player instanceof ServerPlayer s) ? s : null;
 
-        int cQ = 0, cW = 0, cE = 0, cA = 0, cD = 0;
-        for (int i = 0; i < suffix.length(); i++) {
-            switch (suffix.charAt(i)) {
-                case 'q' -> cQ++;
-                case 'w' -> cW++;
-                case 'e' -> cE++;
-                case 'a' -> cA++;
-                case 'd' -> cD++;
-            }
+        ComparisonResult result = blockEntity.runComparison(null, player);
+
+        if (!(result instanceof ComparisonResult.Matched m)) {
+            // 未匹配：保留"顺序找到的"，其他垃圾化
+            handleMishap(player, findMatchedQuadrants());
+            return false;
         }
 
-        // 5) 反馈
-        player.sendSystemMessage(Component.literal("§6===== 法术解析 ====="));
-        player.sendSystemMessage(Component.literal("§a✓ 匹配成功"));
-        player.sendSystemMessage(Component.literal("§e  识别官能团段数: §f" + segmentEnds.size()));
-        player.sendSystemMessage(Component.literal("§e  后缀长度: §f" + suffixLen));
-        player.sendSystemMessage(Component.literal(
-                "§e  后缀字符分布: §fq=" + cQ + " w=" + cW + " e=" + cE
-                        + " a=" + cA + " d=" + cD));
-        //player.sendSystemMessage(Component.literal("§e  后缀原文: §f" + suffix));
+// ============ 匹配成功，按"深度/浅度/事故"分流 ============
+        MatchKind kind = classifyMatch(m);
 
-        // 6) 给出"缺后缀"的卷轴
-        ItemStack scroll = createTruncatedScroll(fullPattern, cursor);
+// 事故：三段都是官能团但顺序错 → 全部垃圾化
+        if (kind == MatchKind.MISHAP) {
+            handleMishap(player, List.of());   // 传空列表 = 全部垃圾化
+            return false;
+        }
+
+        boolean deep = (kind == MatchKind.DEEP);
+
+        // 发书（仅深度）
+        if (deep) {
+            giveParseResultBook(player, m);
+        }
+
+        // 发卷轴（深度 + 浅度）
+        ItemStack scroll = createTruncatedScroll(
+                m.canonicalPattern(),
+                m.matchedSegmentEnd());
         if (!player.getInventory().add(scroll)) {
             player.drop(scroll, false);
         }
-        player.sendSystemMessage(Component.literal("§b→ 已发放缺后缀卷轴"));
+
+        // 音效：深浅各一个
+        if (sp != null) {
+            if (deep) {
+                sp.playNotifySound(
+                        SoundEvents.ENCHANTMENT_TABLE_USE,
+                        SoundSource.PLAYERS, 1.0f, 1.0f);
+            } else {
+                sp.playNotifySound(
+                        SoundEvents.AMETHYST_BLOCK_CHIME,
+                        SoundSource.PLAYERS, 1.0f, 1.2f);
+            }
+        }
+
+        // 清空所有栈
+        for (int q = 0; q < SpellInscriptionTableBlockEntity.QUADRANT_COUNT; q++) {
+            blockEntity.clearQuadrantStack(q);
+        }
+
+        // 浅度专属反馈：actionbar + 粒子 + 经验
+        if (!deep) {
+            if (sp != null) {
+                sp.displayClientMessage(
+                        Component.translatable("hexencrypt.parse.shallow_match_actionbar"),
+                        true);
+            }
+
+            if (player.level() instanceof ServerLevel sl) {
+                sl.sendParticles(
+                        ParticleTypes.ENCHANT,
+                        player.getX(), player.getY() + 1.5, player.getZ(),
+                        16, 0.6, 0.6, 0.6, 0.4);
+            }
+
+            int edges = m.matchedSegmentEnd();
+            int xp = calcShallowXp(edges);
+            if (xp > 0) {
+                player.giveExperiencePoints(xp);
+            }
+        }
 
         return true;
     }
 
-    /** 从中央槽物品提取 HexPattern；不是卷轴或没有图案时返回 null。 */
-    @Nullable
-    private HexPattern extractPatternFromCentralSlot() {
-        ItemStack stack = container.getItem(0);
-        if (stack.isEmpty()) return null;
-
-        if (!(stack.getItem() instanceof IotaHolderItem holder)) return null;
-
-        CompoundTag iotaTag = holder.readIotaTag(stack);
-        if (iotaTag == null) return null;
-
-        // iotaTag 格式：{ type: "hexcasting:pattern", data: { start_dir, angles } }
-        String type = iotaTag.getString(HexIotaTypes.KEY_TYPE);
-        if (!"hexcasting:pattern".equals(type)) return null;
-
-        CompoundTag data = iotaTag.getCompound(HexIotaTypes.KEY_DATA);
-        try {
-            return HexPattern.fromNBT(data);
-        } catch (Exception e) {
-            return null;
+    /**
+     * 未匹配时执行：
+     *   1) 将方块中所有非空的栈内 iota 转为垃圾 iota
+     *   2) 在方块位置模拟 Hex mishap 效果（粒子 + 音效）
+     *   3) 关闭玩家打开的 UI
+     *
+     * <p>对照 Hex 的 {@code MishapInvalidIota}：
+     *   - 事故强调色为 {@link net.minecraft.world.item.DyeColor#GRAY} → 灰色火花
+     *   - 栈内无效 iota 被替换为 {@link GarbageIota}
+     */
+    private void handleMishap(Player player, List<Integer> matchedQuads) {
+        // 1) 只垃圾化"未匹配"的非空栈
+        for (int q = 0; q < SpellInscriptionTableBlockEntity.QUADRANT_COUNT; q++) {
+            Iota iota = blockEntity.getQuadrantStackIota(q);
+            if (iota == null) continue;                 // 空栈跳过
+            if (matchedQuads.contains(q)) continue;     // 匹配成功的保留
+            blockEntity.setQuadrantStackIota(q, new GarbageIota());
         }
+
+        // 2) 粒子 + 音效
+        if (blockEntity.getLevel() instanceof ServerLevel sl) {
+            spawnMishapEffect(sl, blockEntity.getBlockPos());
+        }
+
+        // 3) 关闭 UI
+        if (player instanceof ServerPlayer sp) {
+            sp.playNotifySound(SoundEvents.ENCHANTMENT_TABLE_USE, SoundSource.PLAYERS, 1.0f, 1.0f);
+            sp.closeContainer();
+        }
+    }
+
+    /**
+     * 在指定位置模拟 Hex mishap 的视觉与听觉反馈。
+     *
+     * <p>粒子：灰色 dust 火花（对应 {@code MishapInvalidIota.accentColor} = DyeColor.GRAY）
+     * <p>音效：{@link HexSounds#CAST_FAILURE} —— Hex 施法失败的官方音效
+     */
+    private static void spawnMishapEffect(ServerLevel level, BlockPos pos) {
+        double x = pos.getX() + 0.5;
+        double y = pos.getY() + 1.0;
+        double z = pos.getZ() + 0.5;
+
+        // 灰色 dust —— 大约 (0.4, 0.4, 0.4)
+        Vector3f gray = new Vector3f(0.4f, 0.4f, 0.4f);
+        DustParticleOptions dust = new DustParticleOptions(gray, 1.0f);
+
+        // 20~30 个火花，随机散开
+        for (int i = 0; i < 25; i++) {
+            double dx = (level.random.nextDouble() - 0.5) * 0.8;
+            double dy = level.random.nextDouble() * 0.8;
+            double dz = (level.random.nextDouble() - 0.5) * 0.8;
+            level.sendParticles(dust, x, y, z, 1, dx, dy, dz, 0.05);
+        }
+
+        level.playSound(
+                null,
+                pos,
+                HexSounds.CAST_FAILURE,
+                SoundSource.BLOCKS,
+                1.0f,
+                1.0f);
     }
 
     /** 截取 fullPattern 的前 truncateLen 个角度字符，做成一张大卷轴。 */

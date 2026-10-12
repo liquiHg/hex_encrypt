@@ -64,23 +64,23 @@ public record PacketTableAction(int action, int quadrant, int dirOrdinal) {
             ServerPlayer player = ctx.getSender();
             if (player == null) return;
 
-            // ===== ★ 探针 A：确认包到了服务端 =====
-            player.sendSystemMessage(Component.literal(
-                    "§b[调试A] 服务端收到包 action=" + msg.action
-                            + " q=" + msg.quadrant + " dir=" + msg.dirOrdinal));
+//            // ===== ★ 探针 A：确认包到了服务端 =====
+//            player.sendSystemMessage(Component.literal(
+//                    "§b[调试A] 服务端收到包 action=" + msg.action
+//                            + " q=" + msg.quadrant + " dir=" + msg.dirOrdinal));
 
             // ===== ★ 探针 B：确认 menu 类型 =====
             if (!(player.containerMenu instanceof SpellInscriptionTableMenu menu)) {
-                player.sendSystemMessage(Component.literal(
-                        "§c[调试B] containerMenu 不是 SpellInscriptionTableMenu，实际="
-                                + player.containerMenu.getClass().getSimpleName()));
+//                player.sendSystemMessage(Component.literal(
+//                        "§c[调试B] containerMenu 不是 SpellInscriptionTableMenu，实际="
+//                                + player.containerMenu.getClass().getSimpleName()));
                 return;
             }
 
             var be = menu.getBlockEntity();
             if (be == null) {
-                player.sendSystemMessage(Component.literal(
-                        "§c[调试B] menu.getBlockEntity() == null"));
+//                player.sendSystemMessage(Component.literal(
+//                        "§c[调试B] menu.getBlockEntity() == null"));
                 return;
             }
 
@@ -95,13 +95,13 @@ public record PacketTableAction(int action, int quadrant, int dirOrdinal) {
                         sb.append("q").append(i).append("=").append(iota.getClass().getSimpleName()).append(" ");
                     }
                 }
-                player.sendSystemMessage(Component.literal(
-                        "§b[调试C] 已填象限数=" + filled + " 详情: " + sb));
+//                player.sendSystemMessage(Component.literal(
+//                        "§b[调试C] 已填象限数=" + filled + " 详情: " + sb));
 
                 var central = menu.getStoredItem();
-                player.sendSystemMessage(Component.literal(
-                        "§b[调试C] 中央槽=" + (central.isEmpty() ? "<空>"
-                                : central.getItem() + " ×" + central.getCount())));
+//                player.sendSystemMessage(Component.literal(
+//                        "§b[调试C] 中央槽=" + (central.isEmpty() ? "<空>"
+//                                : central.getItem() + " ×" + central.getCount())));
             }
 
             boolean ok = false;
@@ -128,8 +128,8 @@ public record PacketTableAction(int action, int quadrant, int dirOrdinal) {
 
             // ===== ★ 探针 D：确认动作返回值 =====
             if (msg.action != ACT_REQUEST_SYNC) {
-                player.sendSystemMessage(Component.literal(
-                        "§b[调试D] action=" + msg.action + " 执行结果 ok=" + ok));
+//                player.sendSystemMessage(Component.literal(
+//                        "§b[调试D] action=" + msg.action + " 执行结果 ok=" + ok));
             }
 
             // 同步回包

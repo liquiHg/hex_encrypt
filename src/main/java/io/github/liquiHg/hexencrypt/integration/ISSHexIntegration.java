@@ -50,25 +50,25 @@ public class ISSHexIntegration {
 
     // ==================== 官能团段位定义 ====================
 
-    private static final String SCHOOL_ELDRITCH  = "aedwwedewaqawqqaqq";
-    private static final String SCHOOL_NATURE    = "wqaqwawqaqw";
-    private static final String SCHOOL_LIGHTNING = "qeaqadeedew";
-    private static final String SCHOOL_ICE       = "eadaedeadaedeadae";
-    private static final String SCHOOL_BLOOD     = "edewqaqqqeeeeqeweweweweweddw";
-    private static final String SCHOOL_EVOCATION = "eeeaaeeedewwewqaaedwaeadwe";
-    private static final String SCHOOL_HOLY      = "adeaaedaqadeaaeda";
-    private static final String SCHOOL_ENDER     = "qdeddwaqwqqqwq";
-    private static final String SCHOOL_FIRE      = "aaqawawa";
-    private static final String SCHOOL_FALLBACK  = "wdw";
+    public static final String SCHOOL_ELDRITCH  = "aedwwedewaqawqqaqq";
+    public static final String SCHOOL_NATURE    = "wqaqwawqaqw";
+    public static final String SCHOOL_LIGHTNING = "qeaqadeedew";
+    public static final String SCHOOL_ICE       = "eadaedeadaedeadae";
+    public static final String SCHOOL_BLOOD     = "edewqaqqqeeeeqeweweweweweddw";
+    public static final String SCHOOL_EVOCATION = "eeeaaeeedewwewqaaedwaeadwe";
+    public static final String SCHOOL_HOLY      = "adeaaedaqadeaaeda";
+    public static final String SCHOOL_ENDER     = "qdeddwaqwqqqwq";
+    public static final String SCHOOL_FIRE      = "aaqawawa";
+    public static final String SCHOOL_FALLBACK  = "wdw";
 
-    private static final String TARGET_SELF   = "qaq";
-    private static final String TARGET_OTHER  = "ede";
-    private static final String TARGET_SUMMON = "aqqa";
+    public static final String TARGET_SELF   = "qaq";
+    public static final String TARGET_OTHER  = "ede";
+    public static final String TARGET_SUMMON = "aqqa";
 
-    private static final String CAST_NONE       = "eqaa";
-    private static final String CAST_INSTANT    = "www";
-    private static final String CAST_CONTINUOUS = "qqqqq";
-    private static final String CAST_LONG       = "qqqqqaw";
+    public static final String CAST_NONE       = "eqaa";
+    public static final String CAST_INSTANT    = "www";
+    public static final String CAST_CONTINUOUS = "qqqqq";
+    public static final String CAST_LONG       = "qqqqqaw";
 
     private static final Set<String> SELF_TARGET_SPELLS = Set.of(
             "heal", "greater_heal", "haste", "fortify",
@@ -222,16 +222,16 @@ public class ISSHexIntegration {
 
     @SubscribeEvent
     public static void onCommonSetup(FMLCommonSetupEvent event) {
-        HexEncrypt.LOGGER.info("[Hex加密] onCommonSetup 触发！");   // ★ 加这行
+        //HexEncrypt.LOGGER.info("[Hex加密] onCommonSetup 触发！");
         event.enqueueWork(ISSHexIntegration::registerAllHexActions);
         SpellComparators.register(new FunctionalGroupComparator());
-        HexEncrypt.LOGGER.info("[Hex加密] 比较器已注册，数量={}",
-                SpellComparators.all().size());                     // ★ 加这行
+        //HexEncrypt.LOGGER.info("[Hex加密] 比较器已注册，数量={}",
+        //        SpellComparators.all().size());
     }
 
     private static void registerAllHexActions() {
         if (PENDING_SPELLS.isEmpty()) {
-            HexEncrypt.LOGGER.warn("[Hex加密] 无待处理法术，跳过 Hex 动作注册。");
+            //HexEncrypt.LOGGER.warn("[Hex加密] 无待处理法术，跳过 Hex 动作注册。");
             return;
         }
 
@@ -527,11 +527,11 @@ public class ISSHexIntegration {
                 HexPattern p = tryFinalize(s, startDir);
                 if (p != null) {
                     if ("A".equals(phase)) {
-                        HexEncrypt.LOGGER.info(
-                                "[Hex加密] [A 完整] {} | target={}({}) cast={}({}) | "
-                                        + "startDir={} 尝试={} 总长={}",
-                                hexId, target, targetKind, cast, castType,
-                                startDir, trial, p.getAngles().size());
+//                        HexEncrypt.LOGGER.info(
+//                                "[Hex加密] [A 完整] {} | target={}({}) cast={}({}) | "
+//                                        + "startDir={} 尝试={} 总长={}",
+//                                hexId, target, targetKind, cast, castType,
+//                                startDir, trial, p.getAngles().size());
                     } else {
                         HexEncrypt.LOGGER.warn(
                                 "[Hex加密] [B 降级] {} | 舍弃 school | "
@@ -778,6 +778,22 @@ public class ISSHexIntegration {
         return out;
     }
 
+    public static Set<String> getAllSegmentSignatures() {
+        return SEGMENT_SIGNATURES;
+    }
+
+    private static final Set<String> SEGMENT_SIGNATURES = Set.of(
+            // school
+            SCHOOL_ELDRITCH, SCHOOL_NATURE, SCHOOL_LIGHTNING, SCHOOL_ICE,
+            SCHOOL_BLOOD, SCHOOL_EVOCATION, SCHOOL_HOLY, SCHOOL_ENDER,
+            SCHOOL_FIRE, SCHOOL_FALLBACK,
+            // target
+            TARGET_SELF, TARGET_OTHER, TARGET_SUMMON,
+            // cast
+            CAST_NONE, CAST_INSTANT, CAST_CONTINUOUS, CAST_LONG
+    );
+
+
     // ==================== 工具 ====================
 
     private static long mixSeed(String s) {
@@ -822,7 +838,7 @@ public class ISSHexIntegration {
     private static void printReminder() {
         HexEncrypt.LOGGER.info("======================================================================");
         HexEncrypt.LOGGER.info("[Hex加密] 本模组使用“官能团前缀 + hash 后缀”方案生成图案；");
-        HexEncrypt.LOGGER.info("[Hex加密] 每个 ISS 动作都拥有唯一签名，不再依赖打乱。");
+        HexEncrypt.LOGGER.info("[Hex加密] 每个 ISS 动作都拥有唯一签名。");
         HexEncrypt.LOGGER.info("[Hex加密] 已注册的 ISS 动作数：{}", REGISTERED_ISS_SPELL_IDS.size());
         HexEncrypt.LOGGER.info("======================================================================");
     }

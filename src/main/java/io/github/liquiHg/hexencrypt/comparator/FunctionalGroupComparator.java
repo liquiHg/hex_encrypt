@@ -47,7 +47,8 @@ public class FunctionalGroupComparator implements SpellComparator {
             int pos = fullSig.indexOf(subSig, cursor);
             if (pos < 0) {
                 return ComparisonResult.noMatch(
-                        "quadrant " + (q + 1) + " segment " + subSig + " not found after index " + cursor);
+                        "quadrant " + (q + 1) + " segment " + subSig
+                                + " not found after index " + cursor);
             }
             cursor = pos + subSig.length();
         }
@@ -60,7 +61,7 @@ public class FunctionalGroupComparator implements SpellComparator {
         }
 
         return new ComparisonResult.Matched(
-                null,                       // 目前不反查 ISS 法术，预留
+                access.getCentralSpellId(),   // ISS 卷轴法术id
                 central,
                 cursor,
                 suffix,

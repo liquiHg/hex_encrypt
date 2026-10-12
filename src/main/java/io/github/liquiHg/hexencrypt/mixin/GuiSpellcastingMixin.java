@@ -88,12 +88,12 @@ public class GuiSpellcastingMixin {
                 case LEFT        -> 0.80F;
             };
         }
-        if ((hexencrypt$logCounter++ & 3) == 0) {
-            HexEncrypt.LOGGER.info("[Hex加密/音高] {} turn={} (dir={}) pitch: {} -> {}",
-                    this.hexencrypt$isBacktrack ? "BACK" : "FWD",
-                    this.hexencrypt$lastTurn, this.hexencrypt$lastDir,
-                    originalPitch, newPitch);
-        }
+//        if ((hexencrypt$logCounter++ & 3) == 0) {
+//            HexEncrypt.LOGGER.info("[Hex加密/音高] {} turn={} (dir={}) pitch: {} -> {}",
+//                    this.hexencrypt$isBacktrack ? "BACK" : "FWD",
+//                    this.hexencrypt$lastTurn, this.hexencrypt$lastDir,
+//                    originalPitch, newPitch);
+//        }
         return newPitch;
     }
 
@@ -121,7 +121,7 @@ public class GuiSpellcastingMixin {
     )
     private float hexencrypt$tuneStartPitch(float originalPitch) {
         final float START_PITCH = 3.0F;
-        HexEncrypt.LOGGER.info("[Hex加密/音高] start pitch: {} -> {}", originalPitch, START_PITCH);
+//        HexEncrypt.LOGGER.info("[Hex加密/音高] start pitch: {} -> {}", originalPitch, START_PITCH);
         return START_PITCH;
     }
 }
