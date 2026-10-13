@@ -1,8 +1,12 @@
 package io.github.liquiHg.hexencrypt.block;
 
+import at.petrak.hexcasting.common.particles.ConjureParticleOptions;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.core.particles.ParticleOptions;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.util.Mth;
+import net.minecraft.util.RandomSource;
 import net.minecraft.world.Containers;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
@@ -22,6 +26,7 @@ import net.minecraft.world.level.block.state.StateDefinition;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.level.block.state.properties.DirectionProperty;
 import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.phys.shapes.CollisionContext;
 import net.minecraft.world.phys.shapes.VoxelShape;
 import org.jetbrains.annotations.Nullable;
@@ -56,6 +61,41 @@ public class SpellInscriptionTableBlock extends BaseEntityBlock {
     @Override
     public RenderShape getRenderShape(BlockState state) {
         return RenderShape.MODEL;
+    }
+
+    @Override
+    public void animateTick(BlockState state, Level level, BlockPos pos, RandomSource rand) {
+        // 1. 定义粒子颜色 (这里使用了一种偏青色的魔法色，你可以按喜好调整)
+        ParticleOptions options = new ConjureParticleOptions(0x5C9EAD);
+
+        // 2. 获取方块中心位置
+        Vec3 center = Vec3.atCenterOf(pos);
+
+        // 3. 遍历六个方向，在对应面上生成粒子
+        for (Direction direction : Direction.values()) {
+            int dX = direction.getStepX();
+            int dY = direction.getStepY();
+            int dZ = direction.getStepZ();
+
+            // 每个面每次生成 0~2 个粒子，降低密度以节省性能
+            int count = rand.nextInt(10) / 4;
+
+            for (int i = 0; i < count; i++) {
+                // 在面上随机选择一个生成点
+                double pX = center.x + (dX == 0 ? Mth.nextDouble(rand, -0.5D, 0.5D) : (double) dX * 0.55D);
+                double pY = center.y + (dY == 0 ? Mth.nextDouble(rand, -0.5D, 0.5D) : (double) dY * 0.55D);
+                double pZ = center.z + (dZ == 0 ? Mth.nextDouble(rand, -0.5D, 0.5D) : (double) dZ * 0.55D);
+
+                // 给予一个垂直于面的微小初速度，形成缓慢散发效果
+                double vPerp = Mth.nextDouble(rand, 0.0, 0.01);
+                double vX = vPerp * dX;
+                double vY = vPerp * dY;
+                double vZ = vPerp * dZ;
+
+                // 在客户端生成粒子
+                level.addParticle(options, pX, pY, pZ, vX, vY, vZ);
+            }
+        }
     }
 
     // ==================== 交互 ====================
@@ -129,6 +169,7 @@ public class SpellInscriptionTableBlock extends BaseEntityBlock {
             if (be instanceof SpellInscriptionTableBlockEntity table) {
                 table.tickRecharge();
                 table.tickResolvePendingIota();   // ⭐ 新增：延迟解析 iota
+                table.tickTransferParticles();
             }
         };
     }

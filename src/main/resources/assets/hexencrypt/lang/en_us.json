@@ -2,14 +2,18 @@
   "hexencrypt.message.spell_locked": "You must learn this spell first!",
   "hexencrypt.unlock.success": "Unlocked ISS spell: %s",
   "block.hexencrypt.spell_inscription_table": "Spell Analysis Table",
-  "container.hexencrypt.spell_inscription_table": "Spell Analysis Table",
+  "block.hexencrypt.spell_analysis_table": "Spell Analysis Table",
+  "container.hexencrypt.spell_analysis_table": "Spell Analysis Table",
   "hexencrypt.book.parse.header":   "§6===== Spell Analysis =====",
   "hexencrypt.book.parse.matched":  "§a✓ Matched",
   "hexencrypt.book.parse.spellId":  "§e Identified spell: §f%s",
   "hexencrypt.book.parse.groupCount":"§e Functional groups: §f%s",
   "hexencrypt.book.parse.suffixLength": "§e Suffix length: §f%s",
-  "hexencrypt.book.parse.suffixCounts": "§e Suffix distribution: §f q=%s w=%s e=%s a=%s d=%s",
+  "hexencrypt.book.parse.suffixCounts": "§e Suffix distribution: §c q=%s w=%s e=%s a=%s d=%s",
   "hexencrypt.gui.media_slot.tooltip":  "Insert media to power the table",
   "hexencrypt.gui.center_slot.tooltip": "Insert a spell-bearing item to begin analysis",
-  "hexencrypt.parse.shallow_match_actionbar": "§eA flash of insight..."
+  "hexencrypt.parse.shallow_match_actionbar": "§eA flash of insight...",
+  "hexencrypt.canvas.not_enough_scrolls": "Need %s blank small scrolls, you only have %s",
+  "hexencrypt.clear.not_enough_media": "Not enough media (need 100)",
+  "hexencrypt.gui.place_canvas.tooltip": "Left-click to place canvases in all 4 quadrants (costs 4 blank small scrolls)"
 }

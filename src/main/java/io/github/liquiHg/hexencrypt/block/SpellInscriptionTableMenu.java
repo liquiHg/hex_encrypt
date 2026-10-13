@@ -1,5 +1,7 @@
 package io.github.liquiHg.hexencrypt.block;
 
+import at.petrak.hexcasting.api.HexAPI;
+import at.petrak.hexcasting.api.casting.ParticleSpray;
 import at.petrak.hexcasting.api.casting.iota.GarbageIota;
 import at.petrak.hexcasting.api.casting.iota.Iota;
 import at.petrak.hexcasting.api.casting.iota.PatternIota;
@@ -7,14 +9,17 @@ import at.petrak.hexcasting.api.casting.math.HexAngle;
 import at.petrak.hexcasting.api.casting.math.HexDir;
 import at.petrak.hexcasting.api.casting.math.HexPattern;
 import at.petrak.hexcasting.api.item.IotaHolderItem;
+import at.petrak.hexcasting.api.pigment.FrozenPigment;
 import at.petrak.hexcasting.common.items.storage.ItemScroll;
 import at.petrak.hexcasting.common.lib.HexItems;
 import at.petrak.hexcasting.common.lib.HexSounds;
 import at.petrak.hexcasting.common.lib.hex.HexIotaTypes;
+import io.github.liquiHg.hexencrypt.Config;
 import io.github.liquiHg.hexencrypt.api.ComparisonResult;
 import io.github.liquiHg.hexencrypt.integration.ISSHexIntegration;
 import io.github.liquiHg.hexencrypt.registry.ModBlocks;
 import io.github.liquiHg.hexencrypt.registry.ModMenuTypes;
+import net.minecraft.Util;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.particles.DustParticleOptions;
 import net.minecraft.core.particles.ParticleTypes;
@@ -35,8 +40,10 @@ import net.minecraft.world.inventory.AbstractContainerMenu;
 import net.minecraft.world.inventory.ContainerData;
 import net.minecraft.world.inventory.ContainerLevelAccess;
 import net.minecraft.world.inventory.Slot;
+import net.minecraft.world.item.DyeColor;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 import net.minecraft.world.level.block.Block;
 import org.joml.Vector3f;
@@ -44,6 +51,7 @@ import org.joml.Vector3f;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.UUID;
 
 public class SpellInscriptionTableMenu extends AbstractContainerMenu {
 
@@ -68,6 +76,11 @@ public class SpellInscriptionTableMenu extends AbstractContainerMenu {
     // === 消耗 ===
     public static final int COST_DRAW = 1;
     public static final int COST_UNDO = 2;
+
+    /** 清空栈 / 图案消耗的媒质。 */
+    public static final int COST_CLEAR = 100;
+    /** 一次铺满 4 个象限需要的空白小卷轴数。 */
+    public static final int CANVAS_SCROLL_COST = 4;
 
     /** 匹配分类结果。 */
     private enum MatchKind {
@@ -252,6 +265,104 @@ public class SpellInscriptionTableMenu extends AbstractContainerMenu {
     }
 
     /**
+     * 落笔时设置 origin，不扣媒质。
+     */
+    public boolean srvSetOrigin(int quadrant, int originQ, int originR) {
+        if (blockEntity == null) return false;
+        if (quadrant < 0 || quadrant >= SpellInscriptionTableBlockEntity.QUADRANT_COUNT) return false;
+        blockEntity.setPatternOrigin(quadrant, originQ, originR);
+        return true;
+    }
+
+    /**
+     * 网格平移：扣 20 媒质并存储新 origin。
+     */
+    public boolean srvMoveGrid(int quadrant, int newQ, int newR) {
+        if (blockEntity == null) return false;
+        if (Math.abs(newR) > 1000 || Math.abs(newQ) > 1000) return false;
+        if (quadrant < 0 || quadrant >= SpellInscriptionTableBlockEntity.QUADRANT_COUNT) return false;
+        if (!blockEntity.tryConsumeMedia(20)) return false;
+        blockEntity.setPatternOrigin(quadrant, newQ, newR);
+        return true;
+    }
+
+    /**
+     * 左键点击任意象限：尝试消耗 4 张空白小卷轴，铺满所有象限。
+     * 已有画布的象限不再重复消耗。
+     *
+     * @return true 表示本次调用有实际动作（或不需要动作）
+     */
+    public boolean srvPlaceCanvases(Player player) {
+        if (blockEntity == null) return false;
+
+        int placed = blockEntity.countCanvases();
+        int missing = SpellInscriptionTableBlockEntity.QUADRANT_COUNT - placed;
+        if (missing <= 0) return true;   // 已铺满，视为成功
+
+        int available = countBlankSmallScrolls(player);
+        if (available < missing) {
+            player.sendSystemMessage(Component.translatable(
+                    "hexencrypt.canvas.not_enough_scrolls", missing, available));
+            return false;
+        }
+
+        consumeBlankSmallScrolls(player, missing);
+
+        for (int q = 0; q < SpellInscriptionTableBlockEntity.QUADRANT_COUNT; q++) {
+            if (!blockEntity.hasQuadrantCanvas(q)) {
+                blockEntity.setQuadrantCanvas(q, true);
+            }
+        }
+        return true;
+    }
+
+    private static boolean isBlankSmallScroll(ItemStack s) {
+        if (s == null || s.isEmpty()) return false;
+        if (!s.is(HexItems.SCROLL_SMOL)) return false;
+        CompoundTag tag = s.getTag();
+        if (tag == null) return true;
+        return !tag.contains(ItemScroll.TAG_PATTERN)
+                && !tag.contains(ItemScroll.TAG_OP_ID);
+    }
+
+    private int countBlankSmallScrolls(Player player) {
+        int n = 0;
+        for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
+            ItemStack s = player.getInventory().getItem(i);
+            if (isBlankSmallScroll(s)) n += s.getCount();
+        }
+        return n;
+    }
+
+    private boolean consumeBlankSmallScrolls(Player player, int amount) {
+        int remaining = amount;
+        for (int i = 0; i < player.getInventory().getContainerSize() && remaining > 0; i++) {
+            ItemStack s = player.getInventory().getItem(i);
+            if (isBlankSmallScroll(s)) {
+                int take = Math.min(s.getCount(), remaining);
+                s.shrink(take);
+                remaining -= take;
+            }
+        }
+        return remaining == 0;
+    }
+
+    /**
+     * 解析成功（DEEP / SHALLOW）后消耗 4 个象限的画布。
+     * 若某象限没有画布（理论上不应发生），回退为消耗玩家背包里一张空白小卷轴。
+     */
+    private void consumeCanvasesForParse(Player player) {
+        if (blockEntity == null) return;
+        for (int q = 0; q < SpellInscriptionTableBlockEntity.QUADRANT_COUNT; q++) {
+            if (blockEntity.hasQuadrantCanvas(q)) {
+                blockEntity.setQuadrantCanvas(q, false);
+            } else {
+                consumeBlankSmallScrolls(player, 1);
+            }
+        }
+    }
+
+    /**
      * 创建并给予玩家一本包含解析结果的成书。
      */
     private static String pickBookTitle(Player player) {
@@ -327,29 +438,149 @@ public class SpellInscriptionTableMenu extends AbstractContainerMenu {
      * </ul>
      */
     private MatchKind classifyMatch(ComparisonResult.Matched m) {
-        List<Integer> order = m.quadrantOrder();
-        if (order.size() != 3) return MatchKind.SHALLOW;
+        List<Integer> order = new ArrayList<>();
+        for (int q = 0; q < SpellInscriptionTableBlockEntity.QUADRANT_COUNT; q++) {
+            if (blockEntity.getQuadrantStackIota(q) != null) {
+                order.add(q);
+            }
+        }
+        int n = order.size();
 
-        List<String> sigs = new ArrayList<>(3);
-        for (int q : order) {
+        if (n == 0) return MatchKind.MISHAP;
+
+        // ===== 0) 栈3 兼容性（n >= 4 时）=====
+        // "不影响上述逻辑" → 栈3 有效则继续按前三个判定；无效则强制 MISHAP
+        if (n >= 4) {
+            int q3 = order.get(3);
+            if (!isStack3Compatible(q3, order)) {
+                return MatchKind.MISHAP;
+            }
+        }
+
+        // ===== 1) 提取前 min(3, n) 个 sig =====
+        int firstCount = Math.min(3, n);
+        List<String> sigs = new ArrayList<>(firstCount);
+        for (int i = 0; i < firstCount; i++) {
+            int q = order.get(i);
             Iota iota = blockEntity.getQuadrantStackIota(q);
             if (!(iota instanceof PatternIota pi)) return MatchKind.SHALLOW;
             sigs.add(pi.getPattern().anglesSignature());
         }
 
-        boolean allKnown = isKnownSegment(sigs.get(0))
-                && isKnownSegment(sigs.get(1))
-                && isKnownSegment(sigs.get(2));
+        // ===== 2) n >= 3：先做完整官能团判定 =====
+        if (n >= 3) {
+            String s0 = sigs.get(0);
+            String s1 = sigs.get(1);
+            String s2 = sigs.get(2);
 
-        if (!allKnown) return MatchKind.SHALLOW;
+            // DEEP: 完整 school + target + cast
+            if (SCHOOL_SIGS.contains(s0)
+                    && TARGET_SIGS.contains(s1)
+                    && CAST_SIGS.contains(s2)) {
+                return MatchKind.DEEP;
+            }
 
-        if (SCHOOL_SIGS.contains(sigs.get(0))
-                && TARGET_SIGS.contains(sigs.get(1))
-                && CAST_SIGS.contains(sigs.get(2))) {
-            return MatchKind.DEEP;
+            // 三段都是完整官能团，但顺序不对 → MISHAP
+            if (isKnownSegment(s0) && isKnownSegment(s1) && isKnownSegment(s2)) {
+                return MatchKind.MISHAP;
+            }
         }
 
+        // ===== 3) 部分匹配检查：全部按顺序部分匹配 → SHALLOW =====
+        List<Integer> firstThreeOrAll = (n >= 3) ? order.subList(0, 3) : order;
+        if (allPartiallyMatchInOrder(firstThreeOrAll)) {
+            return MatchKind.SHALLOW;
+        }
+
+        // ===== 4) 其他：存在任意一个不按顺序匹配 → MISHAP =====
         return MatchKind.MISHAP;
+    }
+
+    /**
+     * 检查给定象限列表的每个 sig 是否按顺序部分匹配 central。
+     * "按顺序" = cursor 严格向前推进。
+     * 空 sig 或找不到子串 → false。
+     */
+    private boolean allPartiallyMatchInOrder(List<Integer> quadrantOrder) {
+        HexPattern central = blockEntity.asAccess().getCentralPattern();
+        if (central == null) return false;
+        String fullSig = central.anglesSignature();
+        if (fullSig.isEmpty()) return false;
+
+        int cursor = 0;
+        for (int q : quadrantOrder) {
+            Iota iota = blockEntity.getQuadrantStackIota(q);
+            if (!(iota instanceof PatternIota pi)) return false;
+            String sub = pi.getPattern().anglesSignature();
+
+            // ★ 空签名（2 点一边）处理
+            if (sub.isEmpty()) {
+                if (Config.allowEmptySignatureMatch) {
+                    // 允许：视为匹配，不推进 cursor
+                    continue;
+                } else {
+                    // 不允许：整个部分匹配失败
+                    return false;
+                }
+            }
+
+            int pos = fullSig.indexOf(sub, cursor);
+            if (pos < 0) return false;
+            cursor = pos + sub.length();
+        }
+        return true;
+    }
+
+    /**
+     * 栈3 兼容性：
+     * 前三个象限的 sig 必须能在 central 中按顺序定位；
+     * 栈3 的 sig 必须出现在第三个段结束之后。
+     *
+     * 第三段结束之后的区域 = 随机连接 + hash 后缀。
+     * 按你的折中规则，这一整块都视为 hash 后缀区域。
+     */
+    private boolean isStack3Compatible(int q3, List<Integer> order) {
+        HexPattern central = blockEntity.asAccess().getCentralPattern();
+        if (central == null) return false;
+        String fullSig = central.anglesSignature();
+        if (fullSig.isEmpty()) return false;
+
+        int cursor = 0;
+
+        // 前三个象限按顺序在 central 中推进，得到第三段结束位置
+        for (int i = 0; i < 3; i++) {
+            int q = order.get(i);
+            Iota iota = blockEntity.getQuadrantStackIota(q);
+            if (!(iota instanceof PatternIota pi)) return false;
+
+            String seg = pi.getPattern().anglesSignature();
+
+            if (seg.isEmpty()) {
+                if (Config.allowEmptySignatureMatch) {
+                    continue;
+                } else {
+                    return false;
+                }
+            }
+
+            int pos = fullSig.indexOf(seg, cursor);
+            if (pos < 0) return false;
+
+            cursor = pos + seg.length();
+        }
+
+        // 栈3 必须出现在第三段结束之后
+        Iota iota3 = blockEntity.getQuadrantStackIota(q3);
+        if (!(iota3 instanceof PatternIota pi3)) return false;
+
+        String s3 = pi3.getPattern().anglesSignature();
+
+// ★ 空签名在任意位置都匹配（若允许）
+        if (s3.isEmpty()) {
+            return Config.allowEmptySignatureMatch;
+        }
+
+        return fullSig.indexOf(s3, cursor) >= 0;
     }
 
     private static boolean isKnownSegment(String sig) {
@@ -399,7 +630,15 @@ public class SpellInscriptionTableMenu extends AbstractContainerMenu {
             Iota iota = blockEntity.getQuadrantStackIota(q);
             if (!(iota instanceof PatternIota pi)) continue;
             String sub = pi.getPattern().anglesSignature();
-            if (sub.isEmpty()) continue;
+
+            if (sub.isEmpty()) {
+                if (Config.allowEmptySignatureMatch) {
+                    matched.add(q);
+                    continue;
+                } else {
+                    break;
+                }
+            }
 
             int pos = fullSig.indexOf(sub, cursor);
             if (pos < 0) break;
@@ -435,6 +674,8 @@ public class SpellInscriptionTableMenu extends AbstractContainerMenu {
         }
 
         boolean deep = (kind == MatchKind.DEEP);
+
+        consumeCanvasesForParse(player);
 
         // 发书（仅深度）
         if (deep) {
@@ -499,7 +740,7 @@ public class SpellInscriptionTableMenu extends AbstractContainerMenu {
      *   3) 关闭玩家打开的 UI
      *
      * <p>对照 Hex 的 {@code MishapInvalidIota}：
-     *   - 事故强调色为 {@link net.minecraft.world.item.DyeColor#GRAY} → 灰色火花
+     *   - 事故强调色为 {@link DyeColor#GRAY} → 灰色火花
      *   - 栈内无效 iota 被替换为 {@link GarbageIota}
      */
     private void handleMishap(Player player, List<Integer> matchedQuads) {
@@ -526,30 +767,29 @@ public class SpellInscriptionTableMenu extends AbstractContainerMenu {
     /**
      * 在指定位置模拟 Hex mishap 的视觉与听觉反馈。
      *
-     * <p>粒子：灰色 dust 火花（对应 {@code MishapInvalidIota.accentColor} = DyeColor.GRAY）
+     * <p>粒子：灰色染料的 FrozenPigment 火花
      * <p>音效：{@link HexSounds#CAST_FAILURE} —— Hex 施法失败的官方音效
      */
     private static void spawnMishapEffect(ServerLevel level, BlockPos pos) {
-        double x = pos.getX() + 0.5;
-        double y = pos.getY() + 1.0;
-        double z = pos.getZ() + 0.5;
+        // 1. 粒子生成位置：方块中心上方
+        Vec3 particlePos = new Vec3(pos.getX() + 0.5, pos.getY() + 1.0, pos.getZ() + 0.5);
 
-        // 灰色 dust —— 大约 (0.4, 0.4, 0.4)
-        Vector3f gray = new Vector3f(0.4f, 0.4f, 0.4f);
-        DustParticleOptions dust = new DustParticleOptions(gray, 1.0f);
+        // 2. 创建 ParticleSpray 实例 (burst 需要三个参数: pos, size, count)
+        // size = 1.0 表示扩散半径，count = 25 表示粒子数量
+        ParticleSpray spray = ParticleSpray.burst(particlePos, 1.0, 25);
 
-        // 20~30 个火花，随机散开
-        for (int i = 0; i < 25; i++) {
-            double dx = (level.random.nextDouble() - 0.5) * 0.8;
-            double dy = level.random.nextDouble() * 0.8;
-            double dz = (level.random.nextDouble() - 0.5) * 0.8;
-            level.sendParticles(dust, x, y, z, 1, dx, dy, dz, 0.05);
-        }
+        // 3. 构造灰色 FrozenPigment (使用灰色染料物品)
+        ItemStack grayDyeStack = new ItemStack(HexItems.DYE_PIGMENTS.get(DyeColor.GRAY));
+        FrozenPigment grayPigment = new FrozenPigment(grayDyeStack, Util.NIL_UUID);
 
+        // 4. 在 ParticleSpray 实例上调用 sprayParticles 方法
+        spray.sprayParticles(level, grayPigment);
+
+        // 4. 播放 Hex 模组自带的法术失败音效
         level.playSound(
                 null,
                 pos,
-                HexSounds.CAST_FAILURE,
+                HexSounds.CAST_FAILURE, // 使用 HexSounds
                 SoundSource.BLOCKS,
                 1.0f,
                 1.0f);
@@ -590,7 +830,23 @@ public class SpellInscriptionTableMenu extends AbstractContainerMenu {
         // 入栈后清空正在绘制的图案
         blockEntity.setQuadrantPattern(quadrant, null);
 
-        // ⭐ 若三个及以上象限都有栈，自动尝试解析
+        // ⭐ 记录入栈时刻：客户端用它驱动"角落 → 环绕"的粒子动画
+        if (blockEntity.getLevel() != null) {
+            blockEntity.setTransferStartTick(quadrant, blockEntity.getLevel().getGameTime());
+        }
+
+        // ⭐ 服务端播放 Hex 施法音效（广播给周围玩家）
+        if (blockEntity.getLevel() instanceof ServerLevel sl) {
+            sl.playSound(
+                    null,
+                    blockEntity.getBlockPos(),
+                    HexSounds.CAST_SPELL,
+                    SoundSource.BLOCKS,
+                    1.0f,
+                    1.0f);
+        }
+
+        // 若三个及以上象限都有栈，自动尝试解析
         int filled = 0;
         for (int i = 0; i < SpellInscriptionTableBlockEntity.QUADRANT_COUNT; i++) {
             if (blockEntity.getQuadrantStackIota(i) != null) filled++;
@@ -608,23 +864,16 @@ public class SpellInscriptionTableMenu extends AbstractContainerMenu {
         if (blockEntity == null) return false;
         if (quadrant < 0 || quadrant >= SpellInscriptionTableBlockEntity.QUADRANT_COUNT) return false;
 
-        // 栈本来就是空的，不用清
         if (blockEntity.getQuadrantStackIota(quadrant) == null
                 && blockEntity.getQuadrantPattern(quadrant) == null) {
             return false;
         }
 
-        // 找并消耗一个空白卷轴
-        boolean found = false;
-        for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
-            ItemStack s = player.getInventory().getItem(i);
-            if (!s.isEmpty() && isBlankScroll(s)) {
-                s.shrink(1);
-                found = true;
-                break;
-            }
+        // ★ 改为消耗 100 媒质，不再需要卷轴
+        if (!blockEntity.tryConsumeMedia(COST_CLEAR)) {
+            player.sendSystemMessage(Component.translatable("hexencrypt.clear.not_enough_media"));
+            return false;
         }
-        if (!found) return false;
 
         blockEntity.clearQuadrantStack(quadrant);
         return true;

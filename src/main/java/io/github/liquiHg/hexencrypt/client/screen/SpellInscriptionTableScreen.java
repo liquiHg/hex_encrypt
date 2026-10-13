@@ -5,15 +5,15 @@ import at.petrak.hexcasting.api.casting.math.HexCoord;
 import at.petrak.hexcasting.api.casting.math.HexDir;
 import at.petrak.hexcasting.api.casting.math.HexPattern;
 import at.petrak.hexcasting.client.render.RenderLib;
-import at.petrak.hexcasting.common.lib.HexItems;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.math.Axis;
 import io.github.liquiHg.hexencrypt.HexEncrypt;
+import io.github.liquiHg.hexencrypt.block.SpellInscriptionTableBlockEntity;
 import io.github.liquiHg.hexencrypt.block.SpellInscriptionTableMenu;
 import io.github.liquiHg.hexencrypt.network.ModNetwork;
 import io.github.liquiHg.hexencrypt.network.PacketTableAction;
 import io.github.liquiHg.hexencrypt.util.SpellUnlockManager;
-import net.minecraft.client.Minecraft;
+import net.minecraft.Util;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import net.minecraft.client.renderer.GameRenderer;
@@ -67,6 +67,33 @@ public class SpellInscriptionTableScreen
 
     private final int[] qL = new int[4], qT = new int[4], qR = new int[4], qB = new int[4];
 
+    // ==================== 图案绝对格坐标原点 ====================
+
+    /**
+     * 图案起点在象限坐标系中的格坐标。
+     * 默认 (0,0) = 象限中心。
+     * 落笔时设为落笔点；平移时整体偏移。
+     */
+    private final HexCoord[] patternAbsOrigin = new HexCoord[]{
+            new HexCoord(0, 0), new HexCoord(0, 0),
+            new HexCoord(0, 0), new HexCoord(0, 0)
+    };
+
+    /** 平移触发防抖：每象限上次平移的时间戳（毫秒）。 */
+    private final long[] lastShiftTime = new long[4];
+
+    /** 边缘触发阈值（像素）。 */
+    private static final int EDGE_THRESHOLD = 24;
+
+//    /** 平移一格的像素距离（仅用于防抖判断，实际位移由 patternAbsOrigin 决定）。 */
+//    private static final float HEX_STEP_X = HEX_SIZE * (float) Math.sqrt(3);
+//    private static final float HEX_STEP_Y = HEX_SIZE * 1.5f;
+    /** 平移防抖间隔（毫秒）。 */
+    private static final long SHIFT_COOLDOWN_MS = 700L;
+
+    /** 每次平移的媒质消耗。与服务端 srvMoveGrid 一致。 */
+    private static final long SHIFT_COST = 20L;
+
     // ==================== 本地状态（与服务端同步） ====================
 
     private final HexPattern[] localPatterns = new HexPattern[4];
@@ -99,6 +126,8 @@ public class SpellInscriptionTableScreen
     private static final int STACK_ICON_OFFSET_X = 4;
     private static final int STACK_ICON_OFFSET_Y = 4;
     private static final int STACK_ICON_SIZE = 16;
+
+    private boolean canvasesReady = false;
 
     public SpellInscriptionTableScreen(SpellInscriptionTableMenu menu,
                                        Inventory inv, Component title) {
@@ -144,11 +173,27 @@ public class SpellInscriptionTableScreen
      * 注意：media 字段已经由 ContainerData 每 tick 同步，这里只用来清本地覆盖。
      */
     public void applyServerSync(long media, CompoundTag nbt) {
+
         this.localMediaOverride = -1;
+        this.canvasesReady = nbt.getBoolean("canvases_ready");
 
         for (int i = 0; i < 4; i++) {
             String pk = "q" + i;
             localPatterns[i] = nbt.contains(pk) ? HexPattern.fromNBT(nbt.getCompound(pk)) : null;
+
+            // ★ origin 以服务端为准
+            String ok = SpellInscriptionTableBlockEntity.TAG_ORIGIN_PREFIX + i;
+            if (nbt.contains(ok, Tag.TAG_COMPOUND)) {
+                CompoundTag o = nbt.getCompound(ok);
+                patternAbsOrigin[i] = new HexCoord(o.getInt("q"), o.getInt("r"));
+            } else {
+                patternAbsOrigin[i] = new HexCoord(0, 0);
+            }
+
+            // 图案消失时再保险一次：origin 归零
+            if (localPatterns[i] == null) {
+                patternAbsOrigin[i] = new HexCoord(0, 0);
+            }
 
             String sk = "s" + i;
             if (nbt.contains(sk, Tag.TAG_COMPOUND)) {
@@ -219,32 +264,24 @@ public class SpellInscriptionTableScreen
         // 1) 底图
         gg.blit(BG, leftPos, topPos, 0, 0, imageWidth, imageHeight);
 
-        // 2)媒质槽背景
+        // 2) 媒质槽背景
         renderMediaSlotBg(gg);
 
-        // 3) 四象限卷轴背景
-        for (int q = 0; q < 4; q++) renderQuadrantTiles(gg, q);
+        // ★ 只有画布就绪时才渲染象限内容
+        if (canvasesReady) {
+            for (int q = 0; q < 4; q++) renderQuadrantTiles(gg, q);
+            for (int q = 0; q < 4; q++) renderGridPoints(gg, q);
+            for (int q = 0; q < 4; q++) renderQuadrantPattern(gg, q);
+        }
 
-        // 4) 网格点
-        for (int q = 0; q < 4; q++) renderGridPoints(gg, q);
+        // 6) 十字（与画布无关，保持原位）
+        drawCross(gg, partialTick);
 
-
-        // 5) 象限内已保存的图案
-        for (int q = 0; q < 4; q++) renderQuadrantPattern(gg, q);
-
-        // 6) 十字
-        drawCross(gg);
-
-        // 7) 栈状态图标（thought_knot）
+        // 7) 栈状态图标
         renderStackIcons(gg);
 
         // 8) 媒质条
         renderMediaBar(gg);
-
-        if (!coordsLogged) {
-            coordsLogged = true;
-            logCoords();
-        }
     }
 
     /**
@@ -312,10 +349,15 @@ public class SpellInscriptionTableScreen
         // 半透明灰
         int color = 0x60_9A9A9A;
 
+        HexCoord origin = patternAbsOrigin[q];
+        if (origin == null) origin = new HexCoord(0, 0);
+
         for (int qq = -rangeQ; qq <= rangeQ; qq++) {
             for (int rr = -rangeR; rr <= rangeR; rr++) {
-                float x = HEX_SIZE * (float) Math.sqrt(3) * (qq + rr / 2f);
-                float y = HEX_SIZE * 1.5f * rr;
+                int absQ = qq + origin.getQ();
+                int absR = rr + origin.getR();
+                float x = HEX_SIZE * (float) Math.sqrt(3) * (absQ + absR / 2f);
+                float y = HEX_SIZE * 1.5f * absR;
                 int px = cx + Math.round(x);
                 int py = cy + Math.round(y);
                 if (px < qL[q] + 2 || px >= qR[q] - 2
@@ -334,14 +376,21 @@ public class SpellInscriptionTableScreen
         int cx = (qL[q] + qR[q]) / 2;
         int cy = (qT[q] + qB[q]) / 2;
 
-        // 直接用固定尺度，格子坐标 → 像素坐标，和 pixelToHex 严格互逆
+        HexCoord origin = patternAbsOrigin[q];
+        if (origin == null) origin = new HexCoord(0, 0);
+
         List<HexCoord> coords = pattern.positions();
         List<Vec2> pts = new ArrayList<>(coords.size());
         for (HexCoord c : coords) {
-            float x = HEX_SIZE * (float) Math.sqrt(3) * (c.getQ() + c.getR() / 2f);
-            float y = HEX_SIZE * 1.5f * c.getR();
+            int absQ = c.getQ() + origin.getQ();
+            int absR = c.getR() + origin.getR();
+            float x = HEX_SIZE * (float) Math.sqrt(3) * (absQ + absR / 2f);
+            float y = HEX_SIZE * 1.5f * absR;
             pts.add(new Vec2(x, y));
         }
+
+        // ⭐ 裁剪：把图案渲染限制在本象限内
+        gg.enableScissor(qL[q], qT[q], qR[q], qB[q]);
 
         var pose = gg.pose();
         pose.pushPose();
@@ -360,20 +409,39 @@ public class SpellInscriptionTableScreen
         );
 
         pose.popPose();
+        gg.disableScissor();   // ⭐ 关闭裁剪
     }
 
-    private void drawCross(GuiGraphics gg) {
+    /**
+     * 中央十字。
+     * - 仅当中央槽物品带 ISS 法术时渲染；
+     * - 蓝色长线 + 白色核心都带呼吸（alpha + 臂长随正弦波动）。
+     */
+    private void drawCross(GuiGraphics gg, float partialTick) {
+        if (!hasISSSpell(menu.getStoredItem())) return;
+
         int L = qL[0], T = qT[0], R = qR[1], B = qB[2];
         int cx = (L + R) / 2, cy = (T + B) / 2;
-        gg.fill(L, cy, R, cy + 1, CROSS_COLOR);
-        gg.fill(cx, T, cx + 1, B, CROSS_COLOR);
 
-        boolean active = hasISSSpell(menu.getStoredItem());
-        if (active) {
-            int arm = 10;
-            gg.fill(cx - arm, cy, cx + arm, cy + 1, CROSS_CORE_COLOR);
-            gg.fill(cx, cy - arm, cx + 1, cy + arm, CROSS_CORE_COLOR);
-        }
+        // ===== 呼吸相位 =====
+        // 用系统时间（毫秒）做输入，避免 UI 暂停时相位抖动。
+        // 周期约 3 秒（2π / 2.0 ≈ 3.14 秒），缓慢有质感。
+        long now = Util.getMillis();
+        float phase = (now % 100_000L) / 1000f;
+        float pulse = (float) (Math.sin(phase * 2.0) * 0.5 + 0.5);   // 0..1
+
+        // ===== 蓝色长线：alpha 在 0x70 ~ 0xD0 之间呼吸 =====
+        int alphaLine = 0x70 + (int) (pulse * 0x60);
+        int lineColor = (alphaLine << 24) | (CROSS_COLOR & 0x00FFFFFF);
+        gg.fill(L+4, cy, R-4, cy + 1, lineColor);
+        gg.fill(cx, T, cx + 1, B, lineColor);
+
+        // ===== 白色核心：alpha 0xA0 ~ 0xFF，臂长 8 ~ 14 同步呼吸 =====
+        int alphaCore = 0xA0 + (int) (pulse * 0x5F);
+        int coreColor = (alphaCore << 24) | (CROSS_CORE_COLOR & 0x00FFFFFF);
+        int arm = 8 + (int) (pulse * 6);
+        gg.fill(cx - arm, cy, cx + arm, cy + 1, coreColor);
+        gg.fill(cx, cy - arm, cx + 1, cy + arm, coreColor);
     }
 
     private void renderMediaBar(GuiGraphics gg) {
@@ -436,7 +504,7 @@ public class SpellInscriptionTableScreen
 
     @Override
     public boolean mouseClicked(double mx, double my, int button) {
-        // 先让父类处理 slot 点击（取出/放入物品）
+        // 槽位优先（取放物品）
         if (findHoveredSlot(mx, my) != null) {
             return super.mouseClicked(mx, my, button);
         }
@@ -444,9 +512,17 @@ public class SpellInscriptionTableScreen
         int q = findQuadrant(mx, my);
         if (q < 0) return super.mouseClicked(mx, my, button);
 
-        // ===== 左键 =====
+        // ==================== 左键 ====================
         if (button == 0) {
+            // ★ 画布未就绪：左键 = 铺画布（消耗 4 张空白小卷轴）
+            if (!canvasesReady) {
+                ModNetwork.sendTableAction(PacketTableAction.placeCanvas());
+                return true;
+            }
+
+            // ★ 画布已就绪：左键 = 绘制
             if (hasShiftDown()) {
+                // Shift + 左键 = 清空栈（消耗 100 媒质）
                 ModNetwork.sendTableAction(PacketTableAction.clearStack(q));
                 return true;
             }
@@ -457,35 +533,43 @@ public class SpellInscriptionTableScreen
                 // 新图案：起点 = 鼠标位置的最近网格点
                 HexCoord start = pixelToHex(mx, my, q);
                 if (start == null) return false;
+                patternAbsOrigin[q] = start;
                 drawingQuadrant = q;
                 lastCoord = start;
+
+                ModNetwork.sendTableAction(
+                        PacketTableAction.setOrigin(q, start.getQ(), start.getR()));
             } else {
-                // 已有图案：从末尾续画（HexPattern 只能追加）
+                // 续画：从末尾继续
+                HexCoord origin = patternAbsOrigin[q];
+                if (origin == null) origin = new HexCoord(0, 0);
                 List<HexCoord> positions = existing.positions();
-                HexCoord end = positions.get(positions.size() - 1);
+                HexCoord relEnd = positions.get(positions.size() - 1);
+                HexCoord absEnd = new HexCoord(
+                        relEnd.getQ() + origin.getQ(),
+                        relEnd.getR() + origin.getR());
                 drawingQuadrant = q;
-                lastCoord = end;
+                lastCoord = absEnd;
             }
             return true;
         }
 
-        // ===== 右键 =====
+        // ==================== 右键 ====================
         if (button == 1) {
+            // 画布未就绪时右键不做事（避免误触发）
+            if (!canvasesReady) return true;
+
             if (hasShiftDown()) {
-                // ⭐ Shift + 右键 = 入栈（考察）
                 ModNetwork.sendTableAction(PacketTableAction.consider(q));
                 return true;
             }
-            // 普通右键 = 回退最后一条边
             ModNetwork.sendTableAction(PacketTableAction.undo(q));
             return true;
         }
 
-        // ===== 中键 =====
+        // ==================== 中键 ====================
         if (button == 2) {
-            // ★ 调试探针 1
-//            Minecraft.getInstance().player.sendSystemMessage(
-//                    Component.literal("§b[调试] 中键命中象限 q=" + q + "，准备发 parse 包"));
+            if (!canvasesReady) return true;   // ★ 未铺画布不许解析
             ModNetwork.sendTableAction(PacketTableAction.parse());
             return true;
         }
@@ -498,11 +582,14 @@ public class SpellInscriptionTableScreen
         if (findHoveredSlot(mx, my) != null) {
             return super.mouseDragged(mx, my, button, dx, dy);
         }
-        if (drawingQuadrant < 0 || button != 0) {
+        // ★ 画布未就绪或没在绘制 → 交给父类
+        if (!canvasesReady || drawingQuadrant < 0 || button != 0) {
             return super.mouseDragged(mx, my, button, dx, dy);
         }
+
         int q = drawingQuadrant;
-        if (mx < qL[q] || mx > qR[q] || my < qT[q] || my > qB[q]) return true;
+        // ★ 先检测平移（会同步更新 lastCoord）
+        checkAndShiftEdge(q, mx, my);
 
         HexCoord cur = pixelToHex(mx, my, q);
         if (cur == null || cur.equals(lastCoord)) return true;
@@ -540,6 +627,53 @@ public class SpellInscriptionTableScreen
         return super.mouseReleased(mx, my, button);
     }
 
+    /**
+     * 检测鼠标是否接近象限边缘，若是则向反方向平移图案一格。
+     * 每格消耗 {@link #SHIFT_COST} 媒质。
+     *
+     * <p>平移只影响 {@code patternAbsOrigin} 和 {@code lastCoord}，
+     * 服务端只负责扣媒质。
+     */
+    private void checkAndShiftEdge(int q, double mx, double my) {
+        long now = System.currentTimeMillis();
+        if (now - lastShiftTime[q] < SHIFT_COOLDOWN_MS) return;
+
+        boolean shiftLeft  = mx < qL[q] + EDGE_THRESHOLD;
+        boolean shiftRight = mx > qR[q] - EDGE_THRESHOLD;
+        boolean shiftUp    = my < qT[q] + EDGE_THRESHOLD;
+        boolean shiftDown  = my > qB[q] - EDGE_THRESHOLD;
+
+        if (!shiftLeft && !shiftRight && !shiftUp && !shiftDown) return;
+
+        long media = currentMedia();
+        if (media < SHIFT_COST) return;
+
+        // 反方向平移：鼠标靠左 → 图案右移（dq = +1）
+        int dq = 0, dr = 0;
+        if (shiftLeft)  dq += 1;
+        else if (shiftRight) dq -= 1;
+        else if (shiftUp)    dr += 1;
+        else if (shiftDown)  dr -= 1;
+
+        HexCoord origin = patternAbsOrigin[q];
+        if (origin == null) origin = new HexCoord(0, 0);
+        patternAbsOrigin[q] = new HexCoord(
+                origin.getQ() + dq,
+                origin.getR() + dr);
+
+        if (lastCoord != null) {
+            lastCoord = new HexCoord(
+                    lastCoord.getQ() + dq,
+                    lastCoord.getR() + dr);
+        }
+
+        localMediaOverride = media - SHIFT_COST;
+        lastShiftTime[q] = now;
+
+        ModNetwork.sendTableAction(PacketTableAction.moveGrid(
+                q, patternAbsOrigin[q].getQ(), patternAbsOrigin[q].getR()));
+    }
+
     // ==================== 坐标换算（尖顶六边形，轴向坐标） ====================
 
     private static Vec2 hexToPixel(HexCoord c, float size) {
@@ -556,28 +690,6 @@ public class SpellInscriptionTableScreen
         float rf = ly / (HEX_SIZE * 1.5f);
         float qf = lx / (HEX_SIZE * (float) Math.sqrt(3)) - rf / 2f;
         return hexRound(qf, rf);
-    }
-
-    /**
-     * 用带圆整的线性插值走一条直线，返回从 start（不含）到 end（含）之间
-     * 经过的所有网格点。用于补足鼠标快速拖动时被"跳过"的网格点。
-     */
-    private static List<HexCoord> walkPath(HexCoord start, HexCoord end) {
-        List<HexCoord> out = new ArrayList<>();
-        float ax = start.getQ(), ay = start.getR();
-        float bx = end.getQ(),   by = end.getR();
-        float dx = bx - ax, dy = by - ay;
-        int steps = Math.max(Math.abs((int) dx), Math.abs((int) dy));
-        if (steps <= 0) return out;
-
-        for (int i = 1; i <= steps; i++) {
-            float t = i / (float) steps;
-            HexCoord c = hexRound(ax + dx * t, ay + dy * t);
-            if (out.isEmpty() || !out.get(out.size() - 1).equals(c)) {
-                out.add(c);
-            }
-        }
-        return out;
     }
 
     private static HexCoord hexRound(float qf, float rf) {
@@ -611,18 +723,25 @@ public class SpellInscriptionTableScreen
         return ((a & 0xFF) << 24) | ((r & 0xFF) << 16) | ((g & 0xFF) << 8) | (b & 0xFF);
     }
 
-    private void logCoords() {
-        HexEncrypt.LOGGER.info("[UI][解析台] GUI 左上=({}, {})  尺寸 {}×{}",
-                leftPos, topPos, imageWidth, imageHeight);
-        for (int q = 0; q < 4; q++) {
-            HexEncrypt.LOGGER.info("[UI][解析台] 象限{}  局部 ({},{})~({},{})  屏幕 ({},{})~({},{})",
-                    q, qL[q] - leftPos, qT[q] - topPos, qR[q] - leftPos, qB[q] - topPos,
-                    qL[q], qT[q], qR[q], qB[q]);
-        }
-        HexEncrypt.LOGGER.info("[UI][解析台] 媒质槽 局部=({},{})  媒质条 局部=({},{}) {}×{}",
-                SpellInscriptionTableMenu.MEDIA_SLOT_X, SpellInscriptionTableMenu.MEDIA_SLOT_Y,
-                SpellInscriptionTableMenu.MEDIA_BAR_X, SpellInscriptionTableMenu.MEDIA_BAR_Y,
-                SpellInscriptionTableMenu.MEDIA_BAR_W, SpellInscriptionTableMenu.MEDIA_BAR_H);
+//    private void logCoords() {
+//        HexEncrypt.LOGGER.info("[UI][解析台] GUI 左上=({}, {})  尺寸 {}×{}",
+//                leftPos, topPos, imageWidth, imageHeight);
+//        for (int q = 0; q < 4; q++) {
+//            HexEncrypt.LOGGER.info("[UI][解析台] 象限{}  局部 ({},{})~({},{})  屏幕 ({},{})~({},{})",
+//                    q, qL[q] - leftPos, qT[q] - topPos, qR[q] - leftPos, qB[q] - topPos,
+//                    qL[q], qT[q], qR[q], qB[q]);
+//        }
+//        HexEncrypt.LOGGER.info("[UI][解析台] 媒质槽 局部=({},{})  媒质条 局部=({},{}) {}×{}",
+//                SpellInscriptionTableMenu.MEDIA_SLOT_X, SpellInscriptionTableMenu.MEDIA_SLOT_Y,
+//                SpellInscriptionTableMenu.MEDIA_BAR_X, SpellInscriptionTableMenu.MEDIA_BAR_Y,
+//                SpellInscriptionTableMenu.MEDIA_BAR_W, SpellInscriptionTableMenu.MEDIA_BAR_H);
+//    }
+
+    @Override
+    protected void renderLabels(GuiGraphics gg, int mouseX, int mouseY) {
+        // 只画标题，不画"物品栏"
+        gg.drawString(this.font, this.title, this.titleLabelX, this.titleLabelY,
+                0x404040, false);
     }
 
     @Override
@@ -661,5 +780,14 @@ public class SpellInscriptionTableScreen
 
         // ④ 其他位置 & 有物品的槽位：走原版
         this.renderTooltip(gg, mouseX, mouseY);
+
+        if (!canvasesReady && findHoveredSlot(mouseX, mouseY) == null
+                && findQuadrant(mouseX, mouseY) >= 0) {
+            gg.renderTooltip(font,
+                    Component.translatable("hexencrypt.gui.place_canvas.tooltip"),
+                    mouseX, mouseY);
+            return;
+        }
     }
+
 }

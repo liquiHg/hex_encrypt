@@ -1,5 +1,6 @@
 package io.github.liquiHg.hexencrypt.block;
 
+import at.petrak.hexcasting.api.casting.ParticleSpray;
 import at.petrak.hexcasting.api.casting.iota.Iota;
 import at.petrak.hexcasting.api.casting.iota.IotaType;
 import at.petrak.hexcasting.api.casting.iota.PatternIota;
@@ -7,6 +8,7 @@ import at.petrak.hexcasting.api.casting.math.HexPattern;
 import at.petrak.hexcasting.api.item.IotaHolderItem;
 import at.petrak.hexcasting.api.item.MediaHolderItem;
 import at.petrak.hexcasting.api.misc.MediaConstants;
+import at.petrak.hexcasting.api.pigment.FrozenPigment;
 import at.petrak.hexcasting.common.lib.HexItems;
 import at.petrak.hexcasting.common.lib.hex.HexIotaTypes;
 import at.petrak.hexcasting.xplat.IXplatAbstractions;
@@ -18,6 +20,7 @@ import io.github.liquiHg.hexencrypt.api.SpellComparators;
 import io.github.liquiHg.hexencrypt.registry.ModBlockEntities;
 import io.redspace.ironsspellbooks.api.registry.SpellRegistry;
 import io.redspace.ironsspellbooks.api.spells.SpellData;
+import net.minecraft.Util;
 import net.minecraft.core.BlockPos;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.ListTag;
@@ -27,10 +30,12 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.network.protocol.game.ClientboundBlockEntityDataPacket;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.util.RandomSource;
 import net.minecraft.world.MenuProvider;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.inventory.AbstractContainerMenu;
+import net.minecraft.world.item.DyeColor;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.Level;
@@ -38,11 +43,24 @@ import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.entity.BlockEntityType;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.Vec3;
 import org.jetbrains.annotations.Nullable;
 
 public class SpellInscriptionTableBlockEntity extends BlockEntity implements MenuProvider {
 
     public static final int  QUADRANT_COUNT = 4;
+
+    // === 入栈动画参数（与 Renderer 保持一致）===
+    public static final int   TRANSFER_DURATION_TICKS = 20;   // 1 秒 = 20 tick
+    public static final float CORNER_INSET            = 0.20f;
+    public static final float CORNER_Y                = 1.01f;
+    public static final float ORBIT_CENTER_Y          = 1.50f;
+    /** 起点到终点之间的额外弧线高度（格）。0 = 直线，越大越拱。 */
+    public static final float TRANSFER_ARC_HEIGHT = 0.45f;
+
+    /** 缓存灰色系 pigment（浅紫，视觉上更醒目）。 */
+    private FrozenPigment transferPigment;
+
     /** 上限：能装下 1 个 charged_amethyst（100 000）。 */
     public static final long MAX_MEDIA      = MediaConstants.CRYSTAL_UNIT;
 
@@ -64,6 +82,14 @@ public class SpellInscriptionTableBlockEntity extends BlockEntity implements Men
     /** 入栈后的 Iota（每个象限一个，容量 1）。 */
     private final Iota[] quadrantStackIota = new Iota[QUADRANT_COUNT];
 
+    public static final String TAG_ORIGIN_PREFIX = "origin_";
+    private static final String TAG_ORIGIN_Q = "q";
+    private static final String TAG_ORIGIN_R = "r";
+
+    /** 客户端渲染专用：栈内若是 PatternIota，反序列化出的图案缓存。 */
+    private final HexPattern[] clientStackPatterns = new HexPattern[QUADRANT_COUNT];
+
+
     /**
      * ⭐ 暂存未解析的 iota NBT。
      * load() 在 BlockEntity 刚创建、还没进世界时就会被调用（level == null），
@@ -72,12 +98,85 @@ public class SpellInscriptionTableBlockEntity extends BlockEntity implements Men
      */
     private final CompoundTag[] pendingStackNbt = new CompoundTag[QUADRANT_COUNT];
 
+    /** 图案起点在象限坐标系中的格坐标。默认 (0,0)。 */
+    private final int[] patternOriginQ = new int[QUADRANT_COUNT];
+    private final int[] patternOriginR = new int[QUADRANT_COUNT];
+
+    private static final String TAG_TRANSFER_TICK_PREFIX = "transfer_tick_";
+
+    /**
+     * 每个象限最近一次"入栈"的服务端 gameTime。
+     * 0 表示从未入栈；> 0 表示客户端应该播放一段从角落到环绕的粒子动画。
+     */
+    private final long[] transferStartTick = new long[QUADRANT_COUNT];
+
+    /** 入栈轨迹的色相渐变缓存。 */
+    private FrozenPigment[] transferPaletteCache;
+
+    private static final String TAG_CANVAS_PREFIX = "canvas_";
+
+    /** 每个象限是否有画布（卷轴）。 */
+    private final boolean[] quadrantCanvases = new boolean[QUADRANT_COUNT];
+
+    public boolean hasQuadrantCanvas(int i) {
+        if (i < 0 || i >= QUADRANT_COUNT) return false;
+        return quadrantCanvases[i];
+    }
+
+    public void setQuadrantCanvas(int i, boolean b) {
+        if (i < 0 || i >= QUADRANT_COUNT) return;
+        quadrantCanvases[i] = b;
+        setChanged();
+        syncToClient();
+    }
+
+    public boolean allCanvasesPlaced() {
+        for (int i = 0; i < QUADRANT_COUNT; i++) {
+            if (!quadrantCanvases[i]) return false;
+        }
+        return true;
+    }
+
+    public int countCanvases() {
+        int c = 0;
+        for (int i = 0; i < QUADRANT_COUNT; i++) if (quadrantCanvases[i]) c++;
+        return c;
+    }
+
     public SpellInscriptionTableBlockEntity(BlockEntityType<?> type, BlockPos pos, BlockState state) {
         super(type, pos, state);
     }
 
     public SpellInscriptionTableBlockEntity(BlockPos pos, BlockState state) {
         this(ModBlockEntities.SPELL_INSCRIPTION_TABLE.get(), pos, state);
+    }
+
+    private FrozenPigment transferPigment() {
+        if (transferPigment == null) {
+            ItemStack stack = new ItemStack(HexItems.DYE_PIGMENTS.get(DyeColor.MAGENTA));
+            transferPigment = new FrozenPigment(stack, Util.NIL_UUID);
+        }
+        return transferPigment;
+    }
+
+    /** 冷 → 暖渐变：青 → 浅蓝 → 紫 → 品红 → 粉 → 金黄。 */
+    private FrozenPigment[] transferPalette() {
+        if (transferPaletteCache == null) {
+            DyeColor[] colors = {
+                    DyeColor.CYAN,
+                    DyeColor.LIGHT_BLUE,
+                    DyeColor.PURPLE,
+                    DyeColor.MAGENTA,
+                    DyeColor.PINK,
+                    DyeColor.YELLOW,
+            };
+            transferPaletteCache = new FrozenPigment[colors.length];
+            for (int i = 0; i < colors.length; i++) {
+                ItemStack st = new ItemStack(HexItems.DYE_PIGMENTS.get(colors[i]));
+                transferPaletteCache[i] = new FrozenPigment(st, Util.NIL_UUID);
+            }
+        }
+        return transferPaletteCache;
     }
 
     // ==================== 客户端同步 ====================
@@ -112,6 +211,36 @@ public class SpellInscriptionTableBlockEntity extends BlockEntity implements Men
     public long getMedia()    { return media; }
     public long getMaxMedia() { return MAX_MEDIA; }
     public float getMediaRatio() { return MAX_MEDIA > 0 ? (float) media / MAX_MEDIA : 0f; }
+
+    public int getPatternOriginQ(int i) {
+        if (i < 0 || i >= QUADRANT_COUNT) return 0;
+        return patternOriginQ[i];
+    }
+
+    public int getPatternOriginR(int i) {
+        if (i < 0 || i >= QUADRANT_COUNT) return 0;
+        return patternOriginR[i];
+    }
+
+    public long getTransferStartTick(int i) {
+        if (i < 0 || i >= QUADRANT_COUNT) return 0L;
+        return transferStartTick[i];
+    }
+
+    public void setTransferStartTick(int i, long tick) {
+        if (i < 0 || i >= QUADRANT_COUNT) return;
+        transferStartTick[i] = tick;
+        setChanged();
+        syncToClient();
+    }
+
+    public void setPatternOrigin(int i, int q, int r) {
+        if (i < 0 || i >= QUADRANT_COUNT) return;
+        patternOriginQ[i] = q;
+        patternOriginR[i] = r;
+        setChanged();
+        syncToClient();
+    }
 
     public boolean tryConsumeMedia(long amount) {
         if (amount <= 0) return true;
@@ -149,6 +278,128 @@ public class SpellInscriptionTableBlockEntity extends BlockEntity implements Men
             media += toTake;
             setChanged();
             syncToClient();
+        }
+    }
+
+    /**
+     * 服务端每 tick 调用。
+     * 在入栈动画期间，从象限角落沿直线向环绕中心发射一批粒子，
+     * 速度为「(终点-起点) / TRANSFER_DURATION_TICKS」，让粒子 1 秒后精确抵达终点。
+     */
+    public void tickTransferParticles() {
+        if (!(level instanceof ServerLevel sl)) return;
+        long now = sl.getGameTime();
+
+        float a = CORNER_INSET;
+        float b = 1f - CORNER_INSET;
+        float[][] corners = {
+                { a, CORNER_Y, a },
+                { b, CORNER_Y, a },
+                { a, CORNER_Y, b },
+                { b, CORNER_Y, b }
+        };
+
+        double cx = worldPosition.getX() + 0.5;
+        double cy = worldPosition.getY() + ORBIT_CENTER_Y;
+        double cz = worldPosition.getZ() + 0.5;
+
+        FrozenPigment[] palette = transferPalette();
+        RandomSource rand = sl.random;
+
+        for (int q = 0; q < QUADRANT_COUNT; q++) {
+            long startTick = transferStartTick[q];
+            if (startTick <= 0L) continue;
+
+            long elapsed = now - startTick;
+            if (elapsed >= TRANSFER_DURATION_TICKS) {
+                transferStartTick[q] = 0L;
+                setChanged();
+                continue;
+            }
+
+            float progress = (float) elapsed / (float) TRANSFER_DURATION_TICKS;
+
+            double sx = worldPosition.getX() + corners[q][0];
+            double sy = worldPosition.getY() + corners[q][1];
+            double sz = worldPosition.getZ() + corners[q][2];
+
+            // ===== 主方向（起点 → 终点）=====
+            double dx = cx - sx, dy = cy - sy, dz = cz - sz;
+            double len = Math.sqrt(dx*dx + dy*dy + dz*dz);
+            double ux = dx / len, uy = dy / len, uz = dz / len;
+
+            // ===== 水平垂直轴（在世界 XZ 平面内）=====
+            double perpX = uz, perpZ = -ux;
+            double perpLen = Math.sqrt(perpX*perpX + perpZ*perpZ);
+            if (perpLen < 1.0e-5) { perpX = 1; perpZ = 0; perpLen = 1; }
+            perpX /= perpLen; perpZ /= perpLen;
+
+            // ===== 竖直垂直轴 = 主方向 × 水平垂直轴 =====
+            double perp2X =  uy * perpZ;
+            double perp2Y =  uz * perpX - ux * perpZ;
+            double perp2Z = -uy * perpX;
+            double p2Len = Math.sqrt(perp2X*perp2X + perp2Y*perp2Y + perp2Z*perp2Z);
+            if (p2Len > 1.0e-5) { perp2X /= p2Len; perp2Y /= p2Len; perp2Z /= p2Len; }
+
+            // ===== 主轨迹位置 =====
+            double baseX = sx + dx * progress;
+            double baseY = sy + dy * progress
+                    + Math.sin(progress * Math.PI) * TRANSFER_ARC_HEIGHT;
+            double baseZ = sz + dz * progress;
+
+            // ===== 双轴螺旋摆动：相位差 90°，产生"游动"感 =====
+            double wobbleAmp = Math.sin(progress * Math.PI) * 0.14;
+            double phaseBase = (now + q * 31L) * 0.42;
+            double w1 = Math.sin(phaseBase) * wobbleAmp;
+            double w2 = Math.cos(phaseBase * 1.3) * wobbleAmp * 0.6;
+
+            double px = baseX + perpX * w1 + perp2X * w2;
+            double py = baseY + perp2Y * w2;
+            double pz = baseZ + perpZ * w1 + perp2Z * w2;
+
+            // ===== 颜色：沿进度从冷到暖渐变 =====
+            int colorIdx = Math.min(palette.length - 1,
+                    (int) (progress * palette.length));
+            FrozenPigment pig = palette[colorIdx];
+
+            // ===== 体积：0.03 → 0.19 =====
+            double fuzz = 0.03 + progress * 0.16;
+
+            // ===== 数量：3 → 15 =====
+            int count = 3 + (int) (progress * 12f);
+
+            // ===== 速度：主方向小偏移 + 每颗粒子抖动 → 尾迹自然弥散 =====
+            double jitterX = (rand.nextDouble() - 0.5) * 0.008;
+            double jitterY = (rand.nextDouble() - 0.5) * 0.008;
+            double jitterZ = (rand.nextDouble() - 0.5) * 0.008;
+
+            ParticleSpray trail = new ParticleSpray(
+                    new Vec3(px, py, pz),
+                    new Vec3(jitterX, 0.010 + jitterY, jitterZ),
+                    fuzz,
+                    0.028,
+                    count);
+            trail.sprayParticles(sl, pig);
+
+            // ===== 起点：小爆 + 冷色 =====
+            if (elapsed == 0L) {
+                ParticleSpray burst = new ParticleSpray(
+                        new Vec3(sx, sy, sz),
+                        new Vec3(0, 0.03, 0),
+                        0.10, 0.08, 12);
+                burst.sprayParticles(sl, palette[0]);
+            }
+
+            // ===== 终点前一 tick：暖色大爆发 =====
+            if (elapsed == TRANSFER_DURATION_TICKS - 1) {
+                ParticleSpray burst = new ParticleSpray(
+                        new Vec3(cx, cy, cz),
+                        new Vec3(0, 0.06, 0),
+                        0.38,
+                        0.24,
+                        45);
+                burst.sprayParticles(sl, palette[palette.length - 1]);
+            }
         }
     }
 
@@ -203,6 +454,12 @@ public class SpellInscriptionTableBlockEntity extends BlockEntity implements Men
         syncToClient();
     }
 
+    @Nullable
+    public HexPattern getClientStackPattern(int i) {
+        if (i < 0 || i >= QUADRANT_COUNT) return null;
+        return clientStackPatterns[i];
+    }
+
     // ==================== 象限栈（容量 1） ====================
 
     public Iota getQuadrantStackIota(int i) {
@@ -233,6 +490,10 @@ public class SpellInscriptionTableBlockEntity extends BlockEntity implements Men
         quadrantStackIota[quadrant] = null;
         quadrantPatterns[quadrant] = null;
         pendingStackNbt[quadrant] = null;
+        clientStackPatterns[quadrant] = null;
+        patternOriginQ[quadrant] = 0;
+        patternOriginR[quadrant] = 0;
+        transferStartTick[quadrant] = 0L;
         setChanged();
         syncToClient();
     }
@@ -260,6 +521,23 @@ public class SpellInscriptionTableBlockEntity extends BlockEntity implements Men
             if (quadrantPatterns[i] != null) {
                 tag.put(TAG_Q_PREFIX + i, quadrantPatterns[i].serializeToNBT());
             }
+
+            if (transferStartTick[i] != 0L) {
+                tag.putLong(TAG_TRANSFER_TICK_PREFIX + i, transferStartTick[i]);
+            }
+
+            if (quadrantCanvases[i]) {
+                tag.putBoolean(TAG_CANVAS_PREFIX + i, true);
+            }
+
+            // ⭐ 保存 origin
+            if (patternOriginQ[i] != 0 || patternOriginR[i] != 0) {
+                CompoundTag originTag = new CompoundTag();
+                originTag.putInt("q", patternOriginQ[i]);
+                originTag.putInt("r", patternOriginR[i]);
+                tag.put("origin_" + i, originTag);
+            }
+
             // ⭐ 如果还有 pending 没解析，优先用 pending 保存（避免 iota 丢失）
             CompoundTag stackTagToWrite = null;
             if (quadrantStackIota[i] != null) {
@@ -270,6 +548,17 @@ public class SpellInscriptionTableBlockEntity extends BlockEntity implements Men
             if (stackTagToWrite != null) {
                 tag.put(TAG_STACK_PREFIX + i, stackTagToWrite);
             }
+        }
+    }
+
+    @Nullable
+    private static HexPattern extractPatternFromIotaNbt(@Nullable CompoundTag stackTag) {
+        if (stackTag == null) return null;
+        if (!"hexcasting:pattern".equals(stackTag.getString(TAG_IOTA_TYPE))) return null;
+        try {
+            return HexPattern.fromNBT(stackTag.getCompound(TAG_IOTA_DATA));
+        } catch (Exception e) {
+            return null;
         }
     }
 
@@ -289,6 +578,22 @@ public class SpellInscriptionTableBlockEntity extends BlockEntity implements Men
             String pk = TAG_Q_PREFIX + i;
             quadrantPatterns[i] = tag.contains(pk) ? HexPattern.fromNBT(tag.getCompound(pk)) : null;
 
+            transferStartTick[i] = tag.getLong(TAG_TRANSFER_TICK_PREFIX + i);
+
+            // ★ 从 NBT 读画布状态（替换原来的 tag.putBoolean(...)）
+            quadrantCanvases[i] = tag.getBoolean(TAG_CANVAS_PREFIX + i);
+
+            // ⭐ 读取 origin
+            String ok = "origin_" + i;
+            if (tag.contains(ok, Tag.TAG_COMPOUND)) {
+                CompoundTag originTag = tag.getCompound(ok);
+                patternOriginQ[i] = originTag.getInt("q");
+                patternOriginR[i] = originTag.getInt("r");
+            } else {
+                patternOriginQ[i] = 0;
+                patternOriginR[i] = 0;
+            }
+
             String sk = TAG_STACK_PREFIX + i;
             if (tag.contains(sk)) {
                 CompoundTag stackTag = tag.getCompound(sk);
@@ -296,14 +601,17 @@ public class SpellInscriptionTableBlockEntity extends BlockEntity implements Men
                     // 服务端已就绪 → 直接解析
                     quadrantStackIota[i] = iotaFromNbt(stackTag, serverLevel);
                     pendingStackNbt[i] = null;
+                    clientStackPatterns[i] = null;                // 服务端不需要缓存
                 } else {
-                    // ⭐ level 尚未加载（BE 刚创建或客户端）→ 暂存，等 tick 里再解析
+                    // 客户端（或 level 尚未加载）→ 暂存 + 尝试提取图案
                     quadrantStackIota[i] = null;
                     pendingStackNbt[i] = stackTag;
+                    clientStackPatterns[i] = extractPatternFromIotaNbt(stackTag);   // ⭐
                 }
             } else {
                 quadrantStackIota[i] = null;
                 pendingStackNbt[i] = null;
+                clientStackPatterns[i] = null;                    // ⭐
             }
         }
     }
@@ -407,6 +715,13 @@ public class SpellInscriptionTableBlockEntity extends BlockEntity implements Men
             if (quadrantPatterns[i] != null) {
                 out.put("q" + i, quadrantPatterns[i].serializeToNBT());
             }
+
+            // ⭐ 发送 origin
+            CompoundTag originTag = new CompoundTag();
+            originTag.putInt(TAG_ORIGIN_Q, patternOriginQ[i]);
+            originTag.putInt(TAG_ORIGIN_R, patternOriginR[i]);
+            out.put(TAG_ORIGIN_PREFIX + i, originTag);
+
             if (quadrantStackIota[i] != null) {
                 CompoundTag slot = new CompoundTag();
                 slot.putBoolean("full", true);
@@ -418,6 +733,12 @@ public class SpellInscriptionTableBlockEntity extends BlockEntity implements Men
                 } catch (Exception ignored) {
                 }
                 out.put("s" + i, slot);
+            }
+        }
+        out.putBoolean("canvases_ready", allCanvasesPlaced());
+        for (int i = 0; i < QUADRANT_COUNT; i++) {
+            if (quadrantCanvases[i]) {
+                out.putBoolean("canvas_" + i, true);
             }
         }
         return out;

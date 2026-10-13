@@ -1,15 +1,19 @@
 {
   "hexencrypt.message.spell_locked": "必须先学习此法术！",
   "hexencrypt.unlock.success": "已解锁 ISS 法术：%s",
+  "block.hexencrypt.spell_analysis_table": "法术解析台",
   "block.hexencrypt.spell_inscription_table": "法术解析台",
-  "container.hexencrypt.spell_inscription_table": "法术解析台",
+  "container.hexencrypt.spell_analysis_table": "法术解析台",
   "hexencrypt.book.parse.header":   "§6===== 法术解析 =====",
   "hexencrypt.book.parse.matched":  "§a✓ 匹配成功",
   "hexencrypt.book.parse.spellId":  "§e 识别法术: §f%s",
   "hexencrypt.book.parse.groupCount":"§e 识别官能团段数: §f%s",
   "hexencrypt.book.parse.suffixLength": "§e 后缀长度: §f%s",
-  "hexencrypt.book.parse.suffixCounts": "§e 后缀字符分布: §f q=%s w=%s e=%s a=%s d=%s",
+  "hexencrypt.book.parse.suffixCounts": "§e 后缀字符分布: §c q=%s w=%s e=%s a=%s d=%s",
   "hexencrypt.gui.media_slot.tooltip":  "放入媒质从而供能",
   "hexencrypt.gui.center_slot.tooltip": "放入带有法术的物品以开始解析",
-  "hexencrypt.parse.shallow_match_actionbar": "§e你若有所悟"
+  "hexencrypt.parse.shallow_match_actionbar": "§e你若有所悟",
+  "hexencrypt.canvas.not_enough_scrolls": "需要 %s 张空白小卷轴，当前只有 %s 张",
+  "hexencrypt.clear.not_enough_media": "媒质不足，清空需要 100 媒质",
+  "hexencrypt.gui.place_canvas.tooltip": "左键铺满 4 个象限的画布（消耗 4 张空白小卷轴）"
 }
